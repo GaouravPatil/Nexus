@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
 	"io"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joho/godotenv"
+	"strings"
+	"sync"
 )
 
 // ================= Shared message/response shapes =================
@@ -69,6 +70,63 @@ func callMistral(prompt string) (string, error) {
 	}
 
 	return sendChatRequest("https://api.mistral.ai/v1/chat/completions", apiKey, reqBody, "mistral")
+}
+
+//---------------------------------------
+
+// ================= Ensemble mode =================
+
+type providerResult struct {
+	Provider string
+	Answer   string
+	Err      error
+}
+
+// callEnsemble calls Groq and Mistral in parallel, then asks Groq to
+// combine both answers into one final, synthesized answer.
+func callEnsemble(prompt string) (string, map[string]string, error) {
+	results := make([]providerResult, 2)
+	var wg sync.WaitGroup
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		answer, err := callGroq(prompt)
+		results[0] = providerResult{Provider: "groq", Answer: answer, Err: err}
+	}()
+	go func() {
+		defer wg.Done()
+		answer, err := callMistral(prompt)
+		results[1] = providerResult{Provider: "mistral", Answer: answer, Err: err}
+	}()
+	wg.Wait()
+
+	rawAnswers := make(map[string]string)
+	var validAnswers []string
+	for _, r := range results {
+		if r.Err != nil {
+			log.Printf("ensemble: %s failed: %v", r.Provider, r.Err)
+			continue
+		}
+		rawAnswers[r.Provider] = r.Answer
+		validAnswers = append(validAnswers, fmt.Sprintf("%s said: %s", r.Provider, r.Answer))
+	}
+
+	if len(validAnswers) == 0 {
+		return "", nil, errors.New("both providers failed in ensemble mode")
+	}
+
+	synthesisPrompt := fmt.Sprintf(
+		"Here are answers from two different AI models to the same question: %q\n\n%s\n\nCombine them into one clear, best final answer. Just give the answer, no commentary about the models.",
+		prompt, strings.Join(validAnswers, "\n"),
+	)
+
+	final, err := callGroq(synthesisPrompt) // reuse Groq as the "judge" — it's fast
+	if err != nil {
+		return "", rawAnswers, err
+	}
+
+	return final, rawAnswers, nil
 }
 
 // ================= Shared HTTP call logic =================
@@ -171,8 +229,9 @@ type queryRequest struct {
 }
 
 type queryResponse struct {
-	Provider string `json:"provider"`
-	Answer   string `json:"answer"`
+	Provider   string            `json:"provider"`
+	Answer     string            `json:"answer"`
+	RawAnswers map[string]string `json:"raw_answers,omitempty"`
 }
 
 // ================= /query HTTP handler =================
@@ -199,6 +258,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var answer string
+	var rawAnswers map[string]string
 	var err error
 
 	switch provider {
@@ -206,8 +266,10 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		answer, err = callGroq(req.Prompt)
 	case "mistral":
 		answer, err = callMistral(req.Prompt)
+	case "ensemble":
+		answer, rawAnswers, err = callEnsemble(req.Prompt)
 	default:
-		http.Error(w, fmt.Sprintf(`unknown provider %q — use "groq" or "mistral"`, provider), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf(`unknown provider %q — use "groq", "mistral", or "ensemble"`, provider), http.StatusBadRequest)
 		return
 	}
 
@@ -220,7 +282,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	saveQuery(req.Prompt, provider, answer)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(queryResponse{Provider: provider, Answer: answer})
+	json.NewEncoder(w).Encode(queryResponse{Provider: provider, Answer: answer, RawAnswers: rawAnswers})
 }
 
 // ================= main =================
