@@ -13,53 +13,71 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// ---- Groq API types ----
+// ================= Shared message/response shapes =================
+// Groq and Mistral both use this exact same OpenAI-style shape, so we
+// can reuse one set of types for both providers.
 
-type groqRequest struct {
-	Model    string        `json:"model"`
-	Messages []groqMessage `json:"messages"`
+type chatRequest struct {
+	Model    string    `json:"model"`
+	Messages []message `json:"messages"`
 }
 
-type groqMessage struct {
+type message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-type groqResponse struct {
+type chatResponse struct {
 	Choices []struct {
-		Message groqMessage `json:"message"`
+		Message message `json:"message"`
 	} `json:"choices"`
 }
 
-// ---- Our own /query request/response shape ----
+// ================= Groq adapter =================
 
-type queryRequest struct {
-	Prompt string `json:"prompt"`
-}
-
-type queryResponse struct {
-	Answer string `json:"answer"`
-}
-
-// callGroq sends a prompt to Groq and returns the text answer.
 func callGroq(prompt string) (string, error) {
 	apiKey := os.Getenv("GROQ_API_KEY")
 	if apiKey == "" {
 		return "", errors.New("GROQ_API_KEY environment variable is not set")
 	}
 
-	reqBody := groqRequest{
+	reqBody := chatRequest{
 		Model: "llama-3.3-70b-versatile",
-		Messages: []groqMessage{
+		Messages: []message{
 			{Role: "user", Content: prompt},
 		},
 	}
+
+	return sendChatRequest("https://api.groq.com/openai/v1/chat/completions", apiKey, reqBody, "groq")
+}
+
+// ================= Mistral adapter =================
+
+func callMistral(prompt string) (string, error) {
+	apiKey := os.Getenv("MISTRAL_API_KEY")
+	if apiKey == "" {
+		return "", errors.New("MISTRAL_API_KEY environment variable is not set")
+	}
+
+	reqBody := chatRequest{
+		Model: "mistral-small-latest",
+		Messages: []message{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	return sendChatRequest("https://api.mistral.ai/v1/chat/completions", apiKey, reqBody, "mistral")
+}
+
+// ================= Shared HTTP call logic =================
+
+func sendChatRequest(url, apiKey string, reqBody chatRequest, providerName string) (string, error) {
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", "https://api.groq.com/openai/v1/chat/completions", bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", err
 	}
@@ -78,21 +96,46 @@ func callGroq(prompt string) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("groq API error (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("%s API error (status %d): %s", providerName, resp.StatusCode, string(body))
 	}
 
-	var result groqResponse
+	var result chatResponse
 	if err := json.Unmarshal(body, &result); err != nil {
 		return "", err
 	}
 	if len(result.Choices) == 0 {
-		return "", errors.New("groq returned no choices")
+		return "", fmt.Errorf("%s returned no choices", providerName)
 	}
 
 	return result.Choices[0].Message.Content, nil
 }
 
-// ---- /query HTTP handler ----
+// ================= Router =================
+// Very simple, rule-based routing — no AI classification yet.
+
+func selectProvider(prompt string) string {
+	length := len(prompt)
+
+	if length > 300 {
+		return "mistral"
+	}
+
+	return "groq"
+}
+
+// ================= /query request/response shape =================
+
+type queryRequest struct {
+	Prompt   string `json:"prompt"`
+	Provider string `json:"provider"` // "groq", "mistral", "auto", or empty
+}
+
+type queryResponse struct {
+	Provider string `json:"provider"`
+	Answer   string `json:"answer"`
+}
+
+// ================= /query HTTP handler =================
 
 func handleQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -110,16 +153,35 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := callGroq(req.Prompt)
+	provider := req.Provider
+	if provider == "" || provider == "auto" {
+		provider = selectProvider(req.Prompt)
+	}
+
+	var answer string
+	var err error
+
+	switch provider {
+	case "groq":
+		answer, err = callGroq(req.Prompt)
+	case "mistral":
+		answer, err = callMistral(req.Prompt)
+	default:
+		http.Error(w, fmt.Sprintf(`unknown provider %q — use "groq" or "mistral"`, provider), http.StatusBadRequest)
+		return
+	}
+
 	if err != nil {
-		log.Println("callGroq error:", err)
-		http.Error(w, "failed to get response from Groq", http.StatusInternalServerError)
+		log.Printf("call%s error: %v", provider, err)
+		http.Error(w, fmt.Sprintf("failed to get response from %s", provider), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(queryResponse{Answer: answer})
+	json.NewEncoder(w).Encode(queryResponse{Provider: provider, Answer: answer})
 }
+
+// ================= main =================
 
 func main() {
 	if err := godotenv.Load(); err != nil {
