@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
 
@@ -111,7 +113,6 @@ func sendChatRequest(url, apiKey string, reqBody chatRequest, providerName strin
 }
 
 // ================= Router =================
-// Very simple, rule-based routing — no AI classification yet.
 
 func selectProvider(prompt string) string {
 	length := len(prompt)
@@ -123,11 +124,50 @@ func selectProvider(prompt string) string {
 	return "groq"
 }
 
+// ================= Database =================
+
+var dbPool *pgxpool.Pool
+
+func connectDB() error {
+	dbURL := os.Getenv("SUPABASE_DB_URL")
+	if dbURL == "" {
+		return errors.New("SUPABASE_DB_URL environment variable is not set")
+	}
+
+	pool, err := pgxpool.New(context.Background(), dbURL)
+	if err != nil {
+		return err
+	}
+
+	if err := pool.Ping(context.Background()); err != nil {
+		return err
+	}
+
+	dbPool = pool
+	return nil
+}
+
+// saveQuery logs one query + its answer into the "queries" table.
+// Errors here are logged but never block the response.
+func saveQuery(prompt, provider, answer string) {
+	if dbPool == nil {
+		return
+	}
+
+	_, err := dbPool.Exec(context.Background(),
+		"insert into queries (prompt, provider, answer) values ($1, $2, $3)",
+		prompt, provider, answer,
+	)
+	if err != nil {
+		log.Println("saveQuery error:", err)
+	}
+}
+
 // ================= /query request/response shape =================
 
 type queryRequest struct {
 	Prompt   string `json:"prompt"`
-	Provider string `json:"provider"` // "groq", "mistral", "auto", or empty
+	Provider string `json:"provider"`
 }
 
 type queryResponse struct {
@@ -177,6 +217,8 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	saveQuery(req.Prompt, provider, answer)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(queryResponse{Provider: provider, Answer: answer})
 }
@@ -191,6 +233,13 @@ func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	if err := connectDB(); err != nil {
+		log.Println("warning: could not connect to database:", err)
+		log.Println("server will still run, but queries won't be saved")
+	} else {
+		log.Println("connected to Supabase")
 	}
 
 	mux := http.NewServeMux()
