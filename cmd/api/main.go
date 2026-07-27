@@ -18,8 +18,8 @@ import (
 )
 
 // ================= Shared message/response shapes =================
-// Groq and Mistral both use this exact same OpenAI-style shape, so we
-// can reuse one set of types for both providers.
+// Groq, Mistral, and OpenAI all use the same OpenAI-style chat completion
+// shape, so we can reuse one set of types for all three providers.
 
 type chatRequest struct {
 	Model    string    `json:"model"`
@@ -71,6 +71,24 @@ func callMistral(prompt string) (string, error) {
 	}
 
 	return sendChatRequest("https://api.mistral.ai/v1/chat/completions", apiKey, reqBody, "mistral")
+}
+
+// ================= OpenAI (ChatGPT) adapter =================
+
+func callOpenAI(prompt string) (string, error) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		return "", errors.New("OPENAI_API_KEY environment variable is not set")
+	}
+
+	reqBody := chatRequest{
+		Model: "gpt-4o-mini", // cost-effective; swap to "gpt-4o" for higher quality
+		Messages: []message{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	return sendChatRequest("https://api.openai.com/v1/chat/completions", apiKey, reqBody, "chatgpt")
 }
 
 //---------------------------------------
@@ -267,10 +285,12 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		answer, err = callGroq(req.Prompt)
 	case "mistral":
 		answer, err = callMistral(req.Prompt)
+	case "chatgpt":
+		answer, err = callOpenAI(req.Prompt)
 	case "ensemble":
 		answer, rawAnswers, err = callEnsemble(req.Prompt)
 	default:
-		http.Error(w, fmt.Sprintf(`unknown provider %q — use "groq", "mistral", or "ensemble"`, provider), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf(`unknown provider %q — use "groq", "mistral", "chatgpt", or "ensemble"`, provider), http.StatusBadRequest)
 		return
 	}
 

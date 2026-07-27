@@ -294,6 +294,7 @@ function App() {
                         <option value="auto">Auto</option>
                         <option value="groq">Groq</option>
                         <option value="mistral">Mistral</option>
+                        <option value="chatgpt">ChatGPT</option>
                         <option value="ensemble">Ensemble</option>
                       </select>
                       <button
@@ -379,6 +380,7 @@ function App() {
                         <option value="auto">Auto</option>
                         <option value="groq">Groq</option>
                         <option value="mistral">Mistral</option>
+                        <option value="chatgpt">ChatGPT</option>
                         <option value="ensemble">Ensemble</option>
                       </select>
                       <button
