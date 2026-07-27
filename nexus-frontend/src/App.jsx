@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import BlurText from './BlurText'
 import SideRays from './SideRays'
+import BorderGlow from './BorderGlow'
 import './App.css'
 
 const API_URL = 'http://localhost:8080/query'
@@ -29,8 +30,8 @@ function App() {
   const [prompt, setPrompt] = useState('')
   const [provider, setProvider] = useState('auto')
   const [loading, setLoading] = useState(false)
-  const [greetStep, setGreetStep] = useState(0)
   const [docsOpen, setDocsOpen] = useState(false)
+  const [contactOpen, setContactOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const bottomRef = useRef(null)
 
@@ -51,6 +52,14 @@ function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
+
+  // Close contact dropdown on outside click
+  useEffect(() => {
+    if (!contactOpen) return
+    const close = () => setContactOpen(false)
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [contactOpen])
 
   function updateConv(id, updater) {
     setConversations((prev) => prev.map((c) => (c.id === id ? updater(c) : c)))
@@ -202,9 +211,39 @@ function App() {
           >
             ☰
           </button>
-          <button className="docs-btn" onClick={() => setDocsOpen(true)}>
-            <span className="docs-btn-icon">📖</span> Docs
-          </button>
+          <div className="topbar-actions">
+            <div className="topbar-dropdown-wrap">
+              <button className="docs-btn" onClick={(e) => { e.stopPropagation(); setContactOpen((v) => !v); }}>
+                <span className="docs-btn-icon">✉</span> Contact
+              </button>
+              {contactOpen && (
+                <div className="topbar-dropdown" onClick={(e) => e.stopPropagation()}>
+                  <p className="topbar-dropdown-heading">Get in touch</p>
+                  <ul className="topbar-contact-list">
+                    <li>
+                      <span className="contact-icon">✉</span>
+                      <a href="mailto:patilgaourav304@gmail.com" className="contact-link">
+                        patilgaourav304@gmail.com
+                      </a>
+                    </li>
+                    <li>
+                      <span className="contact-icon">📞</span>
+                      <a href="tel:+919834892067" className="contact-link">
+                        +91 98348 92067
+                      </a>
+                    </li>
+                    <li>
+                      <span className="contact-icon">🕐</span>
+                      <span className="contact-available">Available 24 / 7</span>
+                    </li>
+                  </ul>
+                </div>
+              )}
+            </div>
+            <button className="docs-btn" onClick={() => setDocsOpen(true)}>
+              <span className="docs-btn-icon">📖</span> Docs
+            </button>
+          </div>
         </header>
 
         <div className="shell">
@@ -212,74 +251,62 @@ function App() {
             /* ── Landing: greeting + composer centered ── */
             <div className="landing">
               <div className="hero">
-                <div className="hero-badge">
-                  <span className="hero-badge-dot">NEW</span>
-                  Multi-model orchestration
-                </div>
-
                 <BlurText
-                  text="Welcome Garry,"
+                  text="Welcome Back, Dev"
                   animateBy="words"
                   direction="top"
-                  className="hero-line hero-line-1"
-                  onAnimationComplete={() => setGreetStep(1)}
+                  className="hero-line hero-minimal"
                 />
-                {greetStep >= 1 && (
-                  <BlurText
-                    text="Wanna do more?"
-                    animateBy="words"
-                    direction="top"
-                    delay={80}
-                    className="hero-line hero-line-2"
-                    onAnimationComplete={() => setGreetStep(2)}
-                  />
-                )}
-                {greetStep >= 2 && (
-                  <BlurText
-                    text="Let's go deep."
-                    animateBy="words"
-                    direction="top"
-                    delay={80}
-                    className="hero-line hero-line-3"
-                  />
-                )}
-
                 <p className="hero-subtext">
-                  One prompt, routed across Groq and Mistral — or merged into a single,
-                  cross-validated answer.
+                  One prompt — routed across Groq and Mistral, or cross-validated by both.
                 </p>
               </div>
 
               {/* Inlined composer — do NOT extract to a sub-component inside App */}
-              <form className="composer landing-composer" onSubmit={handleSubmit}>
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Message Nexus..."
-                  rows={1}
-                />
-                <div className="composer-actions">
-                  <select
-                    className="provider-select-inline"
-                    value={provider}
-                    onChange={(e) => setProvider(e.target.value)}
-                    title="Choose AI provider"
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="groq">Groq</option>
-                    <option value="mistral">Mistral</option>
-                    <option value="ensemble">Ensemble</option>
-                  </select>
-                  <button
-                    type="submit"
-                    disabled={loading || !prompt.trim()}
-                    aria-label="Send"
-                  >
-                    ↑
-                  </button>
-                </div>
-              </form>
+              <div className="composer-glow-wrap landing-composer-wrap">
+                <BorderGlow
+                  borderRadius={22}
+                  backgroundColor="#131318"
+                  glowColor="20 70 60"
+                  colors={['#D97757', '#6E8EF0', '#c084fc']}
+                  glowIntensity={1.4}
+                  glowRadius={30}
+                  edgeSensitivity={18}
+                  coneSpread={30}
+                  fillOpacity={0.35}
+                  animated={true}
+                >
+                  <form className="composer" onSubmit={handleSubmit}>
+                    <textarea
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Message Nexus..."
+                      rows={1}
+                    />
+                    <div className="composer-actions">
+                      <select
+                        className="provider-select-inline"
+                        value={provider}
+                        onChange={(e) => setProvider(e.target.value)}
+                        title="Choose AI provider"
+                      >
+                        <option value="auto">Auto</option>
+                        <option value="groq">Groq</option>
+                        <option value="mistral">Mistral</option>
+                        <option value="ensemble">Ensemble</option>
+                      </select>
+                      <button
+                        type="submit"
+                        disabled={loading || !prompt.trim()}
+                        aria-label="Send"
+                      >
+                        ↑
+                      </button>
+                    </div>
+                  </form>
+                </BorderGlow>
+              </div>
             </div>
           ) : (
             /* ── Chat mode: messages + bottom composer ── */
@@ -322,35 +349,49 @@ function App() {
               </main>
 
               {/* Inlined composer — do NOT extract to a sub-component inside App */}
-              <form className="composer" onSubmit={handleSubmit}>
-                <textarea
-                  value={prompt}
-                  onChange={(e) => setPrompt(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Message Nexus..."
-                  rows={1}
-                />
-                <div className="composer-actions">
-                  <select
-                    className="provider-select-inline"
-                    value={provider}
-                    onChange={(e) => setProvider(e.target.value)}
-                    title="Choose AI provider"
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="groq">Groq</option>
-                    <option value="mistral">Mistral</option>
-                    <option value="ensemble">Ensemble</option>
-                  </select>
-                  <button
-                    type="submit"
-                    disabled={loading || !prompt.trim()}
-                    aria-label="Send"
-                  >
-                    ↑
-                  </button>
-                </div>
-              </form>
+              <div className="composer-glow-wrap">
+                <BorderGlow
+                  borderRadius={22}
+                  backgroundColor="#131318"
+                  glowColor="20 70 60"
+                  colors={['#D97757', '#6E8EF0', '#c084fc']}
+                  glowIntensity={1.4}
+                  glowRadius={30}
+                  edgeSensitivity={18}
+                  coneSpread={30}
+                  fillOpacity={0.35}
+                >
+                  <form className="composer" onSubmit={handleSubmit}>
+                    <textarea
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder="Message Nexus..."
+                      rows={1}
+                    />
+                    <div className="composer-actions">
+                      <select
+                        className="provider-select-inline"
+                        value={provider}
+                        onChange={(e) => setProvider(e.target.value)}
+                        title="Choose AI provider"
+                      >
+                        <option value="auto">Auto</option>
+                        <option value="groq">Groq</option>
+                        <option value="mistral">Mistral</option>
+                        <option value="ensemble">Ensemble</option>
+                      </select>
+                      <button
+                        type="submit"
+                        disabled={loading || !prompt.trim()}
+                        aria-label="Send"
+                      >
+                        ↑
+                      </button>
+                    </div>
+                  </form>
+                </BorderGlow>
+              </div>
             </>
           )}
         </div>
