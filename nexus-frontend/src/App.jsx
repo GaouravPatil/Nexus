@@ -436,7 +436,11 @@ function App() {
                     <strong>Mistral</strong> — Mistral AI's flagship models.
                   </li>
                   <li>
-                    <strong>Ensemble</strong> — Queries both Groq & Mistral in parallel
+                    <strong>ChatGPT</strong> — OpenAI's <code>gpt-4o-mini</code> model.
+                    Reliable, well-rounded responses powered by OpenAI.
+                  </li>
+                  <li>
+                    <strong>Ensemble</strong> — Queries both Groq &amp; Mistral in parallel
                     and synthesizes a cross-validated answer. Expand each raw response
                     below the answer to compare.
                   </li>
