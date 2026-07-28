@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
 import BlurText from './BlurText'
 import SideRays from './SideRays'
 import BorderGlow from './BorderGlow'
@@ -170,7 +171,37 @@ function App() {
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
         <div className="sidebar-header">
           <div className="brand">
-            <span className="brand-mark">✦</span>
+            <svg
+              className="brand-logo"
+              viewBox="0 0 56 56"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-hidden="true"
+            >
+              {/* Top blade — terracotta */}
+              <ellipse
+                cx="28" cy="17"
+                rx="7" ry="17"
+                fill="#D97757"
+                transform="rotate(0 28 28)"
+              />
+              {/* Bottom-left blade — golden */}
+              <ellipse
+                cx="28" cy="17"
+                rx="7" ry="17"
+                fill="#E8A820"
+                transform="rotate(120 28 28)"
+              />
+              {/* Bottom-right blade — periwinkle */}
+              <ellipse
+                cx="28" cy="17"
+                rx="7" ry="17"
+                fill="#6E8EF0"
+                transform="rotate(240 28 28)"
+              />
+              {/* Center hub */}
+              <circle cx="28" cy="28" r="4.5" fill="#F2F1EE" />
+            </svg>
             <span className="brand-name">Nexus</span>
           </div>
           <button className="new-chat-btn" onClick={startNewChat} title="New chat">
@@ -319,7 +350,13 @@ function App() {
                       {m.role === 'assistant' && (
                         <div className="provider-tag">{m.provider}</div>
                       )}
-                      <div className="bubble">{m.text}</div>
+                      <div className="bubble">
+                        {m.role === 'assistant' ? (
+                          <ReactMarkdown className="md-content">{m.text}</ReactMarkdown>
+                        ) : (
+                          m.text
+                        )}
+                      </div>
 
                       {m.rawAnswers && (
                         <div className="raw-answers">

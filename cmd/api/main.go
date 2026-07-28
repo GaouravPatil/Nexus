@@ -306,6 +306,55 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(queryResponse{Provider: provider, Answer: answer, RawAnswers: rawAnswers})
 }
 
+// ================= /history HTTP handler =================
+
+type historyRecord struct {
+	ID        int    `json:"id"`
+	Prompt    string `json:"prompt"`
+	Provider  string `json:"provider"`
+	Answer    string `json:"answer"`
+	CreatedAt string `json:"created_at"`
+}
+
+func handleHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "only GET is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if dbPool == nil {
+		http.Error(w, "database not connected", http.StatusServiceUnavailable)
+		return
+	}
+
+	rows, err := dbPool.Query(context.Background(),
+		"select id, prompt, provider, answer, created_at from queries order by created_at desc limit 100",
+	)
+	if err != nil {
+		log.Println("handleHistory query error:", err)
+		http.Error(w, "failed to fetch history", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var records []historyRecord
+	for rows.Next() {
+		var rec historyRecord
+		if err := rows.Scan(&rec.ID, &rec.Prompt, &rec.Provider, &rec.Answer, &rec.CreatedAt); err != nil {
+			log.Println("handleHistory scan error:", err)
+			continue
+		}
+		records = append(records, rec)
+	}
+
+	if records == nil {
+		records = []historyRecord{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(records)
+}
+
 // ================= CORS Handling =================
 
 func enableCORS(next http.HandlerFunc) http.HandlerFunc {
@@ -348,6 +397,7 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	}))
 	mux.HandleFunc("/query", enableCORS(handleQuery))
+	mux.HandleFunc("/history", enableCORS(handleHistory))
 
 	log.Printf("nexus orchestrator-api listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {

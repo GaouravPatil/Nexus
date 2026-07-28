@@ -111,6 +111,12 @@ body {
   font-size: 1rem;
 }
 
+.brand-logo {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
 .brand-name {
   font-weight: 700;
   font-size: 1rem;
@@ -502,8 +508,112 @@ body {
   padding: 0.7rem 1rem;
   line-height: 1.6;
   font-size: 0.92rem;
-  white-space: pre-wrap;
   color: var(--ink);
+}
+
+/* ── Markdown rendered content ── */
+.md-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.md-content p {
+  margin: 0;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.md-content h1,
+.md-content h2,
+.md-content h3,
+.md-content h4 {
+  font-family: 'Inter', sans-serif;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+  margin: 0.3rem 0 0;
+  line-height: 1.3;
+}
+
+.md-content h1 { font-size: 1.25rem; }
+.md-content h2 { font-size: 1.1rem; }
+.md-content h3 { font-size: 0.98rem; }
+.md-content h4 { font-size: 0.92rem; }
+
+.md-content ul,
+.md-content ol {
+  padding-left: 1.4rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.md-content li {
+  line-height: 1.6;
+}
+
+.md-content strong {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.md-content em {
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
+.md-content code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 0.82rem;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.1em 0.4em;
+  color: var(--terracotta);
+}
+
+.md-content pre {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.md-content pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--ink);
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+
+.md-content blockquote {
+  border-left: 3px solid var(--terracotta);
+  padding: 0.3rem 0.85rem;
+  margin: 0;
+  color: var(--ink-soft);
+  background: var(--terracotta-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.md-content a {
+  color: #6E8EF0;
+  text-decoration: none;
+}
+
+.md-content a:hover {
+  text-decoration: underline;
+}
+
+.md-content hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.4rem 0;
 }
 
 .provider-tag {
