@@ -1067,3 +1067,81 @@ kbd {
   color: #4ade80;
   font-weight: 500;
 }
+
+/* ════════════════════════════════════════
+   MODEL-SWITCH HANDOFF NOTICE
+   ════════════════════════════════════════ */
+
+/* provider-tag now accepts a coloured border via inline style */
+.provider-tag {
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  padding: 0.1rem 0.55rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  width: fit-content;
+}
+
+/* Horizontal rule separator in the middle of a handoff */
+.handoff-notice {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.25rem 0;
+  width: 100%;
+  animation: fadeIn 0.3s ease;
+}
+
+.handoff-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+}
+
+.handoff-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.75rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  max-width: 90%;
+}
+
+/* inline markdown in the badge should inherit size */
+.handoff-badge p {
+  margin: 0;
+  font-size: inherit;
+  line-height: 1.4;
+}
+
+.handoff-badge strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Coloured dot representing a provider */
+.handoff-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 5px currentColor;
+}
+
+/* ════════════════════════════════════════
+   SIDEBAR PROVIDER DOT
+   ════════════════════════════════════════ */
+.sidebar-provider-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  opacity: 0.7;
+  margin-right: 2px;
+}

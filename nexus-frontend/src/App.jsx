@@ -16,8 +16,89 @@ class MarkdownBoundary extends Component {
 }
 
 const API_URL = 'http://localhost:8080/query'
+const SUMMARIZE_URL = 'http://localhost:8080/summarize'
 
-const makeConv = () => ({ id: Date.now(), title: 'New Chat', messages: [] })
+// Provider → brand colour map (module-level so it never re-creates)
+const PROVIDER_COLORS = {
+  groq: '#D97757',
+  mistral: '#6E8EF0',
+  chatgpt: '#10a37f',
+  gemini: '#E8A820',
+  ensemble: '#c084fc',
+  auto: '#888',
+}
+
+// Each conversation tracks:
+//   messages  – display messages (role: user | assistant | error | handoff)
+//   history   – OpenAI-style [{role, content}] for the backend
+//   provider  – active provider name
+//   handoffs  – model-switch event log
+const makeConv = () => ({
+  id: Date.now(),
+  title: 'New Chat',
+  provider: 'auto',
+  messages: [],
+  history: [],
+  handoffs: [],
+})
+
+// ─── Composer component (MUST be module-level, not nested inside App) ──────────
+// Defining it inside App causes it to be re-created on every render, which
+// unmounts the <textarea> element after each keystroke — the root cause of the
+// "only first character typed" bug.
+function Composer({ prompt, onPromptChange, onSubmit, onKeyDown, onProviderChange, provider, loading, switchingModel, isEmpty }) {
+  return (
+    <div className={`composer-glow-wrap${isEmpty ? ' landing-composer-wrap' : ''}`}>
+      <BorderGlow
+        borderRadius={22}
+        backgroundColor="#131318"
+        glowColor="20 70 60"
+        colors={['#D97757', '#6E8EF0', '#c084fc']}
+        glowIntensity={1.4}
+        glowRadius={30}
+        edgeSensitivity={18}
+        coneSpread={30}
+        fillOpacity={0.35}
+        animated={isEmpty}
+      >
+        <form className="composer" onSubmit={onSubmit}>
+          <textarea
+            value={prompt}
+            onChange={onPromptChange}
+            onKeyDown={onKeyDown}
+            placeholder="Message Nexus…"
+            rows={1}
+            disabled={switchingModel}
+            autoFocus
+          />
+          <div className="composer-actions">
+            <select
+              className="provider-select-inline"
+              value={provider}
+              onChange={(e) => onProviderChange(e.target.value)}
+              title="Choose AI provider"
+              disabled={switchingModel}
+            >
+              <option value="auto">Auto</option>
+              <option value="groq">Groq</option>
+              <option value="mistral">Mistral</option>
+              <option value="chatgpt">ChatGPT</option>
+              <option value="gemini">Gemini</option>
+              <option value="ensemble">Ensemble</option>
+            </select>
+            <button
+              type="submit"
+              disabled={loading || switchingModel || !prompt.trim()}
+              aria-label="Send"
+            >
+              {loading ? '…' : '↑'}
+            </button>
+          </div>
+        </form>
+      </BorderGlow>
+    </div>
+  )
+}
 
 function App() {
   const [conversations, setConversations] = useState(() => {
@@ -41,6 +122,7 @@ function App() {
   const [prompt, setPrompt] = useState('')
   const [provider, setProvider] = useState('auto')
   const [loading, setLoading] = useState(false)
+  const [switchingModel, setSwitchingModel] = useState(false)
   const [docsOpen, setDocsOpen] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -62,7 +144,7 @@ function App() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, loading])
+  }, [messages, loading, switchingModel])
 
   // Close contact dropdown on outside click
   useEffect(() => {
@@ -81,10 +163,14 @@ function App() {
     setConversations((prev) => [conv, ...prev])
     setCurrentId(conv.id)
     setPrompt('')
+    setProvider('auto')  // FIX: reset provider selector when starting new chat
   }
 
   function selectConv(id) {
     setCurrentId(id)
+    // Sync the provider selector to whatever the selected conv is using
+    const conv = conversations.find((c) => c.id === id)
+    if (conv) setProvider(conv.provider ?? 'auto')
   }
 
   function deleteConv(id, e) {
@@ -94,27 +180,127 @@ function App() {
       if (filtered.length === 0) {
         const fresh = makeConv()
         setCurrentId(fresh.id)
+        setProvider('auto')
         return [fresh]
       }
-      if (currentId === id) setCurrentId(filtered[0].id)
+      if (currentId === id) {
+        setCurrentId(filtered[0].id)
+        setProvider(filtered[0].provider ?? 'auto')
+      }
       return filtered
     })
   }
 
+  // ─── Provider switch handler ──────────────────────────────────────────────
+  async function handleProviderChange(newProvider) {
+    setProvider(newProvider)
+
+    const conv = currentConv
+    // Only trigger handoff if: there are existing messages AND the provider actually changed
+    const currentProvider = conv?.provider ?? 'auto'
+    if (!conv || conv.messages.length === 0 || currentProvider === newProvider) return
+
+    setSwitchingModel(true)
+
+    // Inject a "switching…" notice in the chat
+    updateConv(conv.id, (c) => ({
+      ...c,
+      messages: [
+        ...c.messages,
+        {
+          role: 'handoff',
+          text: `Switching from **${currentProvider}** → **${newProvider}**… analysing chat history`,
+          fromProvider: currentProvider,
+          toProvider: newProvider,
+        },
+      ],
+    }))
+
+    try {
+      const res = await fetch(SUMMARIZE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          history: conv.history ?? [],
+          from_provider: currentProvider,
+          to_provider: newProvider,
+        }),
+      })
+
+      let systemBrief = null
+      if (res.ok) {
+        const data = await res.json()
+        systemBrief = data.summary
+      }
+
+      updateConv(conv.id, (c) => {
+        // Inject system brief: replace any existing system message so it doesn't grow unboundedly
+        const baseHistory = c.history.filter((h) => h.role !== 'system')
+        const newHistory = systemBrief
+          ? [{ role: 'system', content: systemBrief }, ...baseHistory]
+          : baseHistory
+
+        const updatedMessages = c.messages.map((m) =>
+          m.role === 'handoff' && m.toProvider === newProvider && !m.done
+            ? {
+                ...m,
+                text: `Switched to **${newProvider}**. ${systemBrief ? 'Context absorbed ✓' : 'Switching without context brief.'}`,
+                done: true,
+              }
+            : m
+        )
+
+        return {
+          ...c,
+          provider: newProvider,
+          history: newHistory,
+          messages: updatedMessages,
+          handoffs: [
+            ...(c.handoffs ?? []),
+            { fromProvider: currentProvider, toProvider: newProvider, summary: systemBrief },
+          ],
+        }
+      })
+    } catch (err) {
+      console.warn('summarize failed:', err)
+      updateConv(conv.id, (c) => ({
+        ...c,
+        provider: newProvider,
+        messages: c.messages.map((m) =>
+          m.role === 'handoff' && m.toProvider === newProvider && !m.done
+            ? { ...m, text: `Switched to **${newProvider}**.`, done: true }
+            : m
+        ),
+      }))
+    } finally {
+      setSwitchingModel(false)
+    }
+  }
+
+  // ─── Submit handler ───────────────────────────────────────────────────────
   async function handleSubmit(e) {
     e.preventDefault()
     const text = prompt.trim()
-    if (!text || loading) return
+    if (!text || loading || switchingModel) return
 
     const targetId = currentConv?.id ?? currentId
+    // Capture a snapshot of the conv BEFORE the optimistic update
+    const convSnapshot = conversations.find((c) => c.id === targetId) ?? currentConv
+    const currentHistory = convSnapshot?.history ?? []
 
+    // Optimistically add the user message to the UI and history
     updateConv(targetId, (c) => ({
       ...c,
       title: c.messages.length === 0 ? text.slice(0, 42) : c.title,
+      provider: provider,
       messages: [...c.messages, { role: 'user', text }],
+      history: [...(c.history ?? []), { role: 'user', content: text }],
     }))
     setPrompt('')
     setLoading(true)
+
+    // Build history to send using the pre-update snapshot (avoids double-append race)
+    const historyToSend = [...currentHistory, { role: 'user', content: text }]
 
     try {
       const controller = new AbortController()
@@ -123,28 +309,29 @@ function App() {
       const res = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text, provider }),
+        body: JSON.stringify({ history: historyToSend, provider }),
         signal: controller.signal,
       })
       clearTimeout(timeoutId)
 
       if (!res.ok) {
         const errText = await res.text()
-        throw new Error(errText || `Request failed (${res.status})`)
+        throw new Error(errText.trim() || `Request failed (${res.status})`)
       }
 
       const data = await res.json()
+      const assistantMsg = {
+        role: 'assistant',
+        text: data.answer,
+        provider: data.provider,
+        rawAnswers: data.raw_answers,
+      }
+
       updateConv(targetId, (c) => ({
         ...c,
-        messages: [
-          ...c.messages,
-          {
-            role: 'assistant',
-            text: data.answer,
-            provider: data.provider,
-            rawAnswers: data.raw_answers,
-          },
-        ],
+        // Append the assistant reply to the history so next request gets full context
+        history: [...(c.history ?? []), { role: 'assistant', content: data.answer }],
+        messages: [...c.messages, assistantMsg],
       }))
     } catch (err) {
       const isAbort = err.name === 'AbortError'
@@ -152,7 +339,7 @@ function App() {
       const displayMsg = isAbort
         ? '⏱ Request timed out after 35 seconds. The AI provider may be overloaded — please try again.'
         : isNetworkErr
-        ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running with `air`.'
+        ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running.'
         : err.message
       updateConv(targetId, (c) => ({
         ...c,
@@ -168,6 +355,18 @@ function App() {
       e.preventDefault()
       handleSubmit(e)
     }
+  }
+
+  const composerProps = {
+    prompt,
+    onPromptChange: (e) => setPrompt(e.target.value),
+    onSubmit: handleSubmit,
+    onKeyDown: handleKeyDown,
+    onProviderChange: handleProviderChange,
+    provider,
+    loading,
+    switchingModel,
+    isEmpty,
   }
 
   return (
@@ -198,28 +397,9 @@ function App() {
               xmlns="http://www.w3.org/2000/svg"
               aria-hidden="true"
             >
-              {/* Top blade — terracotta */}
-              <ellipse
-                cx="28" cy="17"
-                rx="7" ry="17"
-                fill="#D97757"
-                transform="rotate(0 28 28)"
-              />
-              {/* Bottom-left blade — golden */}
-              <ellipse
-                cx="28" cy="17"
-                rx="7" ry="17"
-                fill="#E8A820"
-                transform="rotate(120 28 28)"
-              />
-              {/* Bottom-right blade — periwinkle */}
-              <ellipse
-                cx="28" cy="17"
-                rx="7" ry="17"
-                fill="#6E8EF0"
-                transform="rotate(240 28 28)"
-              />
-              {/* Center hub */}
+              <ellipse cx="28" cy="17" rx="7" ry="17" fill="#D97757" transform="rotate(0 28 28)" />
+              <ellipse cx="28" cy="17" rx="7" ry="17" fill="#E8A820" transform="rotate(120 28 28)" />
+              <ellipse cx="28" cy="17" rx="7" ry="17" fill="#6E8EF0" transform="rotate(240 28 28)" />
               <circle cx="28" cy="28" r="4.5" fill="#F2F1EE" />
             </svg>
             <span className="brand-name">Nexus</span>
@@ -240,6 +420,13 @@ function App() {
             >
               <span className="sidebar-item-icon">💬</span>
               <span className="sidebar-item-title">{conv.title}</span>
+              {conv.provider && conv.provider !== 'auto' && (
+                <span
+                  className="sidebar-provider-dot"
+                  style={{ backgroundColor: PROVIDER_COLORS[conv.provider] ?? '#888' }}
+                  title={conv.provider}
+                />
+              )}
               <button
                 className="sidebar-delete"
                 onClick={(e) => deleteConv(conv.id, e)}
@@ -312,96 +499,92 @@ function App() {
                   One prompt — routed across Groq and Mistral, or cross-validated by both.
                 </p>
               </div>
-
-              {/* Inlined composer — do NOT extract to a sub-component inside App */}
-              <div className="composer-glow-wrap landing-composer-wrap">
-                <BorderGlow
-                  borderRadius={22}
-                  backgroundColor="#131318"
-                  glowColor="20 70 60"
-                  colors={['#D97757', '#6E8EF0', '#c084fc']}
-                  glowIntensity={1.4}
-                  glowRadius={30}
-                  edgeSensitivity={18}
-                  coneSpread={30}
-                  fillOpacity={0.35}
-                  animated={true}
-                >
-                  <form className="composer" onSubmit={handleSubmit}>
-                    <textarea
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      placeholder="Message Nexus..."
-                      rows={1}
-                    />
-                    <div className="composer-actions">
-                      <select
-                        className="provider-select-inline"
-                        value={provider}
-                        onChange={(e) => setProvider(e.target.value)}
-                        title="Choose AI provider"
-                      >
-                        <option value="auto">Auto</option>
-                        <option value="groq">Groq</option>
-                        <option value="mistral">Mistral</option>
-                        <option value="chatgpt">ChatGPT</option>
-                        <option value="ensemble">Ensemble</option>
-                      </select>
-                      <button
-                        type="submit"
-                        disabled={loading || !prompt.trim()}
-                        aria-label="Send"
-                      >
-                        ↑
-                      </button>
-                    </div>
-                  </form>
-                </BorderGlow>
-              </div>
+              <Composer {...composerProps} />
             </div>
           ) : (
             /* ── Chat mode: messages + bottom composer ── */
             <>
               <main className="conversation">
                 <div className="messages">
-                  {messages.map((m, i) => (
-                    <div key={i} className={`message ${m.role}`}>
-                      {m.role === 'assistant' && (
-                        <div className="provider-tag">{m.provider}</div>
-                      )}
-                      <div className="bubble">
-                        {m.role === 'assistant' ? (
-                          <MarkdownBoundary>
-                            <div className="md-content">
-                              <ReactMarkdown>{String(m.text ?? '')}</ReactMarkdown>
-                            </div>
-                          </MarkdownBoundary>
-                        ) : (
-                          m.text
+                  {messages.map((m, i) => {
+                    // ── Handoff divider ──
+                    if (m.role === 'handoff') {
+                      return (
+                        <div key={i} className="handoff-notice">
+                          <div className="handoff-line" />
+                          <div className="handoff-badge">
+                            <span
+                              className="handoff-dot"
+                              style={{ backgroundColor: PROVIDER_COLORS[m.fromProvider] ?? '#888' }}
+                            />
+                            <span className="handoff-label">
+                              <ReactMarkdown>{m.text}</ReactMarkdown>
+                            </span>
+                            <span
+                              className="handoff-dot"
+                              style={{ backgroundColor: PROVIDER_COLORS[m.toProvider] ?? '#888' }}
+                            />
+                          </div>
+                          <div className="handoff-line" />
+                        </div>
+                      )
+                    }
+
+                    return (
+                      <div key={i} className={`message ${m.role}`}>
+                        {m.role === 'assistant' && (
+                          <div
+                            className="provider-tag"
+                            style={{
+                              borderColor: PROVIDER_COLORS[m.provider] ?? '#555',
+                              color: PROVIDER_COLORS[m.provider] ?? 'var(--ink-soft)',
+                            }}
+                          >
+                            {m.provider}
+                          </div>
+                        )}
+                        <div className="bubble">
+                          {m.role === 'assistant' ? (
+                            <MarkdownBoundary>
+                              <div className="md-content">
+                                <ReactMarkdown>{String(m.text ?? '')}</ReactMarkdown>
+                              </div>
+                            </MarkdownBoundary>
+                          ) : (
+                            m.text
+                          )}
+                        </div>
+
+                        {m.rawAnswers && (
+                          <div className="raw-answers">
+                            {Object.entries(m.rawAnswers).map(([name, answer]) => (
+                              <details key={name}>
+                                <summary>{name}</summary>
+                                <p>{answer}</p>
+                              </details>
+                            ))}
+                          </div>
                         )}
                       </div>
+                    )
+                  })}
 
-                      {m.rawAnswers && (
-                        <div className="raw-answers">
-                          {Object.entries(m.rawAnswers).map(([name, answer]) => (
-                            <details key={name}>
-                              <summary>{name}</summary>
-                              <p>{answer}</p>
-                            </details>
-                          ))}
-                        </div>
-                      )}
+                  {switchingModel && (
+                    <div className="message assistant">
+                      <div className="provider-tag" style={{ borderColor: '#E8A820', color: '#E8A820' }}>
+                        analysing…
+                      </div>
+                      <div className="bubble typing">
+                        <span></span><span></span><span></span>
+                      </div>
                     </div>
-                  ))}
+                  )}
 
                   {loading && (
                     <div className="message assistant">
                       <div className="provider-tag">thinking…</div>
                       <div className="bubble typing">
-                        <span></span>
-                        <span></span>
-                        <span></span>
+                        <span></span><span></span><span></span>
                       </div>
                     </div>
                   )}
@@ -410,51 +593,7 @@ function App() {
                 </div>
               </main>
 
-              {/* Inlined composer — do NOT extract to a sub-component inside App */}
-              <div className="composer-glow-wrap">
-                <BorderGlow
-                  borderRadius={22}
-                  backgroundColor="#131318"
-                  glowColor="20 70 60"
-                  colors={['#D97757', '#6E8EF0', '#c084fc']}
-                  glowIntensity={1.4}
-                  glowRadius={30}
-                  edgeSensitivity={18}
-                  coneSpread={30}
-                  fillOpacity={0.35}
-                >
-                  <form className="composer" onSubmit={handleSubmit}>
-                    <textarea
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      onKeyDown={handleKeyDown}
-                      placeholder="Message Nexus..."
-                      rows={1}
-                    />
-                    <div className="composer-actions">
-                      <select
-                        className="provider-select-inline"
-                        value={provider}
-                        onChange={(e) => setProvider(e.target.value)}
-                        title="Choose AI provider"
-                      >
-                        <option value="auto">Auto</option>
-                        <option value="groq">Groq</option>
-                        <option value="mistral">Mistral</option>
-                        <option value="chatgpt">ChatGPT</option>
-                        <option value="ensemble">Ensemble</option>
-                      </select>
-                      <button
-                        type="submit"
-                        disabled={loading || !prompt.trim()}
-                        aria-label="Send"
-                      >
-                        ↑
-                      </button>
-                    </div>
-                  </form>
-                </BorderGlow>
-              </div>
+              <Composer {...composerProps} />
             </>
           )}
         </div>
@@ -466,66 +605,49 @@ function App() {
           <div className="docs-panel" onClick={(e) => e.stopPropagation()}>
             <div className="docs-panel-header">
               <h2 className="docs-title">How to use Nexus</h2>
-              <button className="docs-close" onClick={() => setDocsOpen(false)}>
-                ×
-              </button>
+              <button className="docs-close" onClick={() => setDocsOpen(false)}>×</button>
             </div>
 
             <div className="docs-body">
               <div className="docs-section">
                 <h3>🚀 Getting started</h3>
-                <p>
-                  Type any question or prompt into the message box and press{' '}
-                  <kbd>Enter</kbd> (or click ↑) to send.
-                </p>
+                <p>Type any question or prompt and press <kbd>Enter</kbd> (or ↑) to send.</p>
               </div>
 
               <div className="docs-section">
                 <h3>🤖 Choosing a provider</h3>
-                <p>
-                  Use the dropdown next to the send button to pick which AI powers
-                  your response:
-                </p>
                 <ul>
-                  <li>
-                    <strong>Auto</strong> — Nexus picks the fastest available model.
-                  </li>
-                  <li>
-                    <strong>Groq</strong> — Ultra-fast inference via Groq's LPU hardware.
-                  </li>
-                  <li>
-                    <strong>Mistral</strong> — Mistral AI's flagship models.
-                  </li>
-                  <li>
-                    <strong>ChatGPT</strong> — OpenAI's <code>gpt-4o-mini</code> model.
-                    Reliable, well-rounded responses powered by OpenAI.
-                  </li>
-                  <li>
-                    <strong>Ensemble</strong> — Queries both Groq &amp; Mistral in parallel
-                    and synthesizes a cross-validated answer. Expand each raw response
-                    below the answer to compare.
-                  </li>
+                  <li><strong>Auto</strong> — Nexus picks the best available model.</li>
+                  <li><strong>Groq</strong> — Ultra-fast inference via Groq's LPU hardware.</li>
+                  <li><strong>Mistral</strong> — Mistral AI's flagship models.</li>
+                  <li><strong>ChatGPT</strong> — OpenAI's <code>gpt-4o-mini</code> model.</li>
+                  <li><strong>Gemini</strong> — Google's Gemini 2.5 Flash model.</li>
+                  <li><strong>Ensemble</strong> — Queries both Groq &amp; Mistral in parallel and synthesizes a cross-validated answer.</li>
                 </ul>
+              </div>
+
+              <div className="docs-section">
+                <h3>🔄 Switching models mid-chat</h3>
+                <p>
+                  Change the AI model at any point. Nexus automatically generates a{' '}
+                  <strong>context handoff brief</strong> — the new model analyses the full chat
+                  history and absorbs it before responding, so there is no gap in knowledge.
+                </p>
               </div>
 
               <div className="docs-section">
                 <h3>💬 Chat history</h3>
                 <p>
-                  Every conversation is saved in your browser. Click any item in the
-                  left sidebar to revisit it. Use <strong>✎</strong> to start a new
-                  conversation. Delete any chat with the × button.
+                  Every conversation is saved in your browser. Click any item in the sidebar to revisit it.
+                  Use <strong>✎</strong> to start a new conversation. Delete any chat with ×.
                 </p>
               </div>
 
               <div className="docs-section">
                 <h3>⌨️ Keyboard shortcuts</h3>
                 <ul>
-                  <li>
-                    <kbd>Enter</kbd> — send message
-                  </li>
-                  <li>
-                    <kbd>Shift + Enter</kbd> — new line in message
-                  </li>
+                  <li><kbd>Enter</kbd> — send message</li>
+                  <li><kbd>Shift + Enter</kbd> — new line in message</li>
                 </ul>
               </div>
             </div>
