@@ -1,9 +1,19 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, Component } from 'react'
 import ReactMarkdown from 'react-markdown'
 import BlurText from './BlurText'
 import SideRays from './SideRays'
 import BorderGlow from './BorderGlow'
 import './App.css'
+
+// Error boundary to prevent ReactMarkdown crashes from taking down the whole page
+class MarkdownBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: false } }
+  static getDerivedStateFromError() { return { error: true } }
+  render() {
+    if (this.state.error) return <span style={{ color: 'var(--ink-soft)', fontStyle: 'italic' }}>[render error]</span>
+    return this.props.children
+  }
+}
 
 const API_URL = 'http://localhost:8080/query'
 
@@ -70,13 +80,11 @@ function App() {
     const conv = makeConv()
     setConversations((prev) => [conv, ...prev])
     setCurrentId(conv.id)
-    setGreetStep(0)
     setPrompt('')
   }
 
   function selectConv(id) {
     setCurrentId(id)
-    setGreetStep(3)
   }
 
   function deleteConv(id, e) {
@@ -109,11 +117,16 @@ function App() {
     setLoading(true)
 
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 35000)
+
       const res = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: text, provider }),
+        signal: controller.signal,
       })
+      clearTimeout(timeoutId)
 
       if (!res.ok) {
         const errText = await res.text()
@@ -134,9 +147,16 @@ function App() {
         ],
       }))
     } catch (err) {
+      const isAbort = err.name === 'AbortError'
+      const isNetworkErr = err instanceof TypeError && err.message === 'Failed to fetch'
+      const displayMsg = isAbort
+        ? '⏱ Request timed out after 35 seconds. The AI provider may be overloaded — please try again.'
+        : isNetworkErr
+        ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running with `air`.'
+        : err.message
       updateConv(targetId, (c) => ({
         ...c,
-        messages: [...c.messages, { role: 'error', text: err.message }],
+        messages: [...c.messages, { role: 'error', text: displayMsg }],
       }))
     } finally {
       setLoading(false)
@@ -352,7 +372,11 @@ function App() {
                       )}
                       <div className="bubble">
                         {m.role === 'assistant' ? (
-                          <ReactMarkdown className="md-content">{m.text}</ReactMarkdown>
+                          <MarkdownBoundary>
+                            <div className="md-content">
+                              <ReactMarkdown>{String(m.text ?? '')}</ReactMarkdown>
+                            </div>
+                          </MarkdownBoundary>
                         ) : (
                           m.text
                         )}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
@@ -52,7 +53,9 @@ func callGroq(prompt string) (string, error) {
 		},
 	}
 
-	return sendChatRequest("https://api.groq.com/openai/v1/chat/completions", apiKey, reqBody, "groq")
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return sendChatRequest(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, reqBody, "groq")
 }
 
 // ================= Mistral adapter =================
@@ -70,7 +73,9 @@ func callMistral(prompt string) (string, error) {
 		},
 	}
 
-	return sendChatRequest("https://api.mistral.ai/v1/chat/completions", apiKey, reqBody, "mistral")
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return sendChatRequest(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, reqBody, "mistral")
 }
 
 // ================= OpenAI (ChatGPT) adapter =================
@@ -88,10 +93,10 @@ func callOpenAI(prompt string) (string, error) {
 		},
 	}
 
-	return sendChatRequest("https://api.openai.com/v1/chat/completions", apiKey, reqBody, "chatgpt")
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return sendChatRequest(ctx, "https://api.openai.com/v1/chat/completions", apiKey, reqBody, "chatgpt")
 }
-
-//---------------------------------------
 
 // ================= Ensemble mode =================
 
@@ -150,20 +155,21 @@ func callEnsemble(prompt string) (string, map[string]string, error) {
 
 // ================= Shared HTTP call logic =================
 
-func sendChatRequest(url, apiKey string, reqBody chatRequest, providerName string) (string, error) {
+func sendChatRequest(ctx context.Context, url, apiKey string, reqBody chatRequest, providerName string) (string, error) {
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	// 30-second client timeout + context timeout — prevents hanging forever if the AI API is slow
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -296,7 +302,7 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		log.Printf("call%s error: %v", provider, err)
-		http.Error(w, fmt.Sprintf("failed to get response from %s", provider), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to get response from %s: %v", provider, err), http.StatusInternalServerError)
 		return
 	}
 
@@ -399,8 +405,15 @@ func main() {
 	mux.HandleFunc("/query", enableCORS(handleQuery))
 	mux.HandleFunc("/history", enableCORS(handleHistory))
 
+	server := &http.Server{
+		Addr:         ":" + port,
+		Handler:      mux,
+		ReadTimeout:  35 * time.Second,
+		WriteTimeout: 35 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 	log.Printf("nexus orchestrator-api listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
