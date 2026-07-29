@@ -243,10 +243,10 @@ function App() {
         const updatedMessages = c.messages.map((m) =>
           m.role === 'handoff' && m.toProvider === newProvider && !m.done
             ? {
-                ...m,
-                text: `Switched to **${newProvider}**. ${systemBrief ? 'Context absorbed ✓' : 'Switching without context brief.'}`,
-                done: true,
-              }
+              ...m,
+              text: `Switched to **${newProvider}**. ${systemBrief ? 'Context absorbed ✓' : 'Switching without context brief.'}`,
+              done: true,
+            }
             : m
         )
 
@@ -339,8 +339,8 @@ function App() {
       const displayMsg = isAbort
         ? '⏱ Request timed out after 35 seconds. The AI provider may be overloaded — please try again.'
         : isNetworkErr
-        ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running.'
-        : err.message
+          ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running.'
+          : err.message
       updateConv(targetId, (c) => ({
         ...c,
         messages: [...c.messages, { role: 'error', text: displayMsg }],
@@ -496,7 +496,7 @@ function App() {
                   className="hero-line hero-minimal"
                 />
                 <p className="hero-subtext">
-                  One prompt — routed across Groq and Mistral, or cross-validated by both.
+                  One prompt — Cross-model persistent memory
                 </p>
               </div>
               <Composer {...composerProps} />
