@@ -1,6 +1,11 @@
 <div align="center">
 
-<img src="nexus-frontend/public/vite.svg" width="64" alt="Nexus Logo" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 56" fill="none" width="72" height="72">
+  <ellipse cx="28" cy="17" rx="7" ry="17" fill="#D97757" transform="rotate(0 28 28)"/>
+  <ellipse cx="28" cy="17" rx="7" ry="17" fill="#E8A820" transform="rotate(120 28 28)"/>
+  <ellipse cx="28" cy="17" rx="7" ry="17" fill="#6E8EF0" transform="rotate(240 28 28)"/>
+  <circle cx="28" cy="28" r="4.5" fill="#F2F1EE"/>
+</svg>
 
 # Nexus
 
