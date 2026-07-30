@@ -126,12 +126,12 @@ The Go backend forwards the entire `history` slice to the provider's API. Every 
 │       ▼             ▼             ▼                              │
 │   ┌───────────────────────────────────────┐                      │
 │   │          history[] sent to API        │                      │
-│   │  [U1]   [U1,A1,U2]   [U1,A1,U2,A2,U3]│                      │
+│   │  [U1]   [U1,A1,U2]   [U1,A1,U2,A2,U3]│                       │
 │   └───────────────────┬───────────────────┘                      │
 │                       │                                          │
 │                       ▼                                          │
 │                  ┌─────────┐                                     │
-│                  │  Model  │  Has full context ✓                  │
+│                  │  Model  │  Has full context ✓                 |
 │                  └─────────┘                                     │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -147,13 +147,13 @@ When a user changes the provider dropdown mid-conversation, Nexus triggers a **3
 │  Phase 1: TRIGGER                                                    │
 │  ┌────────────────────────────────┐                                  │
 │  │  User changes dropdown         │                                  │
-│  │  Groq  ──────────►  Mistral   │                                  │
+│  │  Groq  ──────────►  Mistral   │                                   │
 │  └────────────────┬───────────────┘                                  │
 │                   │                                                  │
 │                   ▼                                                  │
 │  Phase 2: SUMMARIZE                                                  │
 │  ┌────────────────────────────────────────────────────────────────┐  │
-│  │  Frontend sends full history to POST /summarize               │  │
+│  │  Frontend sends full history to POST /summarize                │  │
 │  │                                                                │  │
 │  │  {                                                             │  │
 │  │    "history": [ ...all prior turns... ],                       │  │
@@ -176,14 +176,14 @@ When a user changes the provider dropdown mid-conversation, Nexus triggers a **3
 │  │  the conversation history for all future requests:             │  │
 │  │                                                                │  │
 │  │  history = [                                                   │  │
-│  │    { role: "system",    content: "<handoff brief>" },  ← NEW  │  │
+│  │    { role: "system",    content: "<handoff brief>" },  ← NEW   │  │
 │  │    { role: "user",      content: "..." },                      │  │
 │  │    { role: "assistant", content: "..." },                      │  │
 │  │    ...                                                         │  │
 │  │  ]                                                             │  │
 │  │                                                                │  │
 │  │  UI shows:  ● Groq ──── Switched to mistral. Context           │  │
-│  │                         absorbed ✓ ──── ●                     │  │
+│  │                         absorbed ✓ ──── ●                      │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │                                                                      │
 │  All subsequent messages go to Mistral with full context ✓           │
