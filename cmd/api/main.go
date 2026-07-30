@@ -19,8 +19,6 @@ import (
 )
 
 // ================= Shared message/response shapes =================
-// Groq, Mistral, and OpenAI all use the same OpenAI-style chat completion
-// shape, so we can reuse one set of types for all three providers.
 
 type chatRequest struct {
 	Model    string    `json:"model"`
