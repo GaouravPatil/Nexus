@@ -152,7 +152,7 @@ This history slice is passed verbatim to the provider's chat completion API. The
 
 When `currentProvider !== newProvider` and the conversation is non-empty, the frontend:
 
-1. Renders a transient "switching… analysing chat history" banner.
+1. Renders a transient "switching… analysing chat history" and banner.
 2. Immediately posts to `/summarize`:
 
 ```json
