@@ -15,7 +15,7 @@ class MarkdownBoundary extends Component {
   }
 }
 
-const API_URL = 'http://localhost:8080/query'
+const STREAM_URL = 'http://localhost:8080/stream'
 const SUMMARIZE_URL = 'http://localhost:8080/summarize'
 
 // Provider → brand colour map (module-level so it never re-creates)
