@@ -75,7 +75,7 @@ User → "What is my code word?"     [Mistral answers: BANANA ✓]
 │                         │Llama3.3│   │ Small   │  │ gpt-4o   │  │
 │                         │  70B   │   │ Latest  │  │   mini   │  │
 │                         └────────┘   └─────────┘  └──────────┘  │
-│                              │                                   │
+│                              │                                    
 │                         ┌────────┐   ┌──────────────────────┐   │
 │                         │ Gemini │   │      Supabase        │   │
 │                         │  2.5   │   │  PostgreSQL (pgx/v5) │   │

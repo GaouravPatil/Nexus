@@ -277,18 +277,17 @@ function App() {
     }
   }
 
-  // ─── Submit handler ───────────────────────────────────────────────────────
+  // ─── Submit handler (SSE streaming) ─────────────────────────────────────
   async function handleSubmit(e) {
     e.preventDefault()
     const text = prompt.trim()
     if (!text || loading || switchingModel) return
 
     const targetId = currentConv?.id ?? currentId
-    // Capture a snapshot of the conv BEFORE the optimistic update
     const convSnapshot = conversations.find((c) => c.id === targetId) ?? currentConv
     const currentHistory = convSnapshot?.history ?? []
 
-    // Optimistically add the user message to the UI and history
+    // Add the user message optimistically
     updateConv(targetId, (c) => ({
       ...c,
       title: c.messages.length === 0 ? text.slice(0, 42) : c.title,
@@ -299,51 +298,102 @@ function App() {
     setPrompt('')
     setLoading(true)
 
-    // Build history to send using the pre-update snapshot (avoids double-append race)
     const historyToSend = [...currentHistory, { role: 'user', content: text }]
+
+    // Placeholder streaming message — we'll append tokens into it
+    const streamingMsgId = Date.now()
+    updateConv(targetId, (c) => ({
+      ...c,
+      messages: [...c.messages, { role: 'assistant', text: '', provider: provider, streaming: true, _id: streamingMsgId }],
+    }))
 
     try {
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 35000)
-
-      const res = await fetch(API_URL, {
+      const res = await fetch(STREAM_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ history: historyToSend, provider }),
         signal: controller.signal,
       })
-      clearTimeout(timeoutId)
 
       if (!res.ok) {
         const errText = await res.text()
         throw new Error(errText.trim() || `Request failed (${res.status})`)
       }
 
-      const data = await res.json()
-      const assistantMsg = {
-        role: 'assistant',
-        text: data.answer,
-        provider: data.provider,
-        rawAnswers: data.raw_answers,
-      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let activeProvider = provider
+      let rawAnswers = null
+      let fullText = ''
 
-      updateConv(targetId, (c) => ({
-        ...c,
-        // Append the assistant reply to the history so next request gets full context
-        history: [...(c.history ?? []), { role: 'assistant', content: data.answer }],
-        messages: [...c.messages, assistantMsg],
-      }))
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+
+        // Process all complete SSE lines in buffer
+        const lines = buffer.split('\n')
+        buffer = lines.pop() // keep incomplete last line
+
+        let currentEvent = null
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            const raw = line.slice(6).trim()
+            if (currentEvent === 'provider') {
+              activeProvider = JSON.parse(raw)
+              // Update placeholder message with resolved provider
+              updateConv(targetId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m._id === streamingMsgId ? { ...m, provider: activeProvider } : m
+                ),
+              }))
+            } else if (currentEvent === 'raw_answers') {
+              rawAnswers = JSON.parse(raw)
+            } else if (currentEvent === 'error') {
+              throw new Error(JSON.parse(raw))
+            } else if (currentEvent === 'done') {
+              // Finalise: remove streaming flag
+              updateConv(targetId, (c) => ({
+                ...c,
+                history: [...(c.history ?? []), { role: 'assistant', content: fullText }],
+                messages: c.messages.map((m) =>
+                  m._id === streamingMsgId
+                    ? { ...m, streaming: false, rawAnswers }
+                    : m
+                ),
+              }))
+            } else {
+              // Regular token
+              const token = JSON.parse(raw)
+              fullText += token
+              updateConv(targetId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m._id === streamingMsgId ? { ...m, text: m.text + token } : m
+                ),
+              }))
+            }
+            currentEvent = null
+          }
+        }
+      }
     } catch (err) {
-      const isAbort = err.name === 'AbortError'
+      if (err.name === 'AbortError') return
       const isNetworkErr = err instanceof TypeError && err.message === 'Failed to fetch'
-      const displayMsg = isAbort
-        ? '⏱ Request timed out after 35 seconds. The AI provider may be overloaded — please try again.'
-        : isNetworkErr
-          ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running.'
-          : err.message
+      const displayMsg = isNetworkErr
+        ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running.'
+        : err.message
+      // Replace the streaming placeholder with an error message
       updateConv(targetId, (c) => ({
         ...c,
-        messages: [...c.messages, { role: 'error', text: displayMsg }],
+        messages: c.messages
+          .filter((m) => m._id !== streamingMsgId)
+          .concat({ role: 'error', text: displayMsg }),
       }))
     } finally {
       setLoading(false)
@@ -548,6 +598,7 @@ function App() {
                             <MarkdownBoundary>
                               <div className="md-content">
                                 <ReactMarkdown>{String(m.text ?? '')}</ReactMarkdown>
+                                {m.streaming && <span className="stream-cursor" />}
                               </div>
                             </MarkdownBoundary>
                           ) : (
@@ -580,9 +631,9 @@ function App() {
                     </div>
                   )}
 
-                  {loading && (
+                  {loading && !messages.some((m) => m.streaming) && (
                     <div className="message assistant">
-                      <div className="provider-tag">thinking…</div>
+                      <div className="provider-tag">connecting…</div>
                       <div className="bubble typing">
                         <span></span><span></span><span></span>
                       </div>
