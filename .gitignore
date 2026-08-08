@@ -1,2 +1,51 @@
+# Environment
 .env
+.env.*
+!.env.example
+
+# Temp
 tmp/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.lock.hcl
+terraform.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+crash.log
+crash.*.log
+
+# AWS CLI distribution (binary, not source)
+aws/dist/
+aws/__pycache__/
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+
+# Node / Frontend
+node_modules/
+nexus-frontend/dist/
+nexus-frontend/.env
+nexus-frontend/.env.*
+!nexus-frontend/.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
