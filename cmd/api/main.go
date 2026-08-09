@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -18,6 +19,73 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
+
+// ================= Provider Metrics (Smart Router) =================
+
+// providerCostPer1K holds approximate cost per 1K output tokens in USD.
+var providerCostPer1K = map[string]float64{
+	"groq":    0.00059, // llama-3.3-70b
+	"mistral": 0.00200, // mistral-small-latest
+	"chatgpt": 0.00600, // gpt-4o-mini
+	"gemini":  0.00035, // gemini-2.5-flash
+}
+
+type providerMetrics struct {
+	mu           sync.RWMutex
+	emaLatencyMs map[string]float64
+	callCount    map[string]int64
+	errorCount   map[string]int64
+}
+
+var pMetrics = &providerMetrics{
+	// Seed with reasonable defaults so first auto-route isn't arbitrary.
+	emaLatencyMs: map[string]float64{
+		"groq":    200,
+		"mistral": 400,
+		"chatgpt": 300,
+		"gemini":  350,
+	},
+	callCount:  make(map[string]int64),
+	errorCount: make(map[string]int64),
+}
+
+func (m *providerMetrics) record(provider string, latencyMs float64, failed bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount[provider]++
+	if failed {
+		m.errorCount[provider]++
+		return
+	}
+	const alpha = 0.3 // EMA factor — higher = more weight on recent calls
+	m.emaLatencyMs[provider] = alpha*latencyMs + (1-alpha)*m.emaLatencyMs[provider]
+}
+
+func (m *providerMetrics) score(provider string) float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	// Normalize latency (ceiling 3 s) and cost (ceiling $0.01/1K).
+	nLatency := math.Min(m.emaLatencyMs[provider]/3000.0, 1.0)
+	nCost := math.Min(providerCostPer1K[provider]/0.01, 1.0)
+	// 60 % weight on speed, 40 % on cost → lower score is better.
+	return 0.6*nLatency + 0.4*nCost
+}
+
+func (m *providerMetrics) snapshot() map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]interface{})
+	for _, p := range []string{"groq", "mistral", "chatgpt", "gemini"} {
+		out[p] = map[string]interface{}{
+			"ema_latency_ms": math.Round(m.emaLatencyMs[p]*10) / 10,
+			"cost_per_1k_usd": providerCostPer1K[p],
+			"calls":          m.callCount[p],
+			"errors":         m.errorCount[p],
+			"score":          math.Round(m.score(p)*1000) / 1000,
+		}
+	}
+	return out
+}
 
 // ================= Shared message/response shapes =================
 
@@ -61,7 +129,10 @@ func callGroq(history []message) (string, error) {
 	reqBody := chatRequest{Model: "llama-3.3-70b-versatile", Messages: history}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	return sendChatRequest(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, reqBody, "groq")
+	t0 := time.Now()
+	res, err := sendChatRequest(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, reqBody, "groq")
+	pMetrics.record("groq", float64(time.Since(t0).Milliseconds()), err != nil)
+	return res, err
 }
 
 func streamGroq(ctx context.Context, history []message, out chan<- string) error {
@@ -69,7 +140,10 @@ func streamGroq(ctx context.Context, history []message, out chan<- string) error
 	if apiKey == "" {
 		return errors.New("GROQ_API_KEY not set")
 	}
-	return streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, "llama-3.3-70b-versatile", history, out)
+	t0 := time.Now()
+	err := streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, "llama-3.3-70b-versatile", history, out)
+	pMetrics.record("groq", float64(time.Since(t0).Milliseconds()), err != nil)
+	return err
 }
 
 // ================= Mistral adapter =================
@@ -82,7 +156,10 @@ func callMistral(history []message) (string, error) {
 	reqBody := chatRequest{Model: "mistral-small-latest", Messages: history}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	return sendChatRequest(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, reqBody, "mistral")
+	t0 := time.Now()
+	res, err := sendChatRequest(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, reqBody, "mistral")
+	pMetrics.record("mistral", float64(time.Since(t0).Milliseconds()), err != nil)
+	return res, err
 }
 
 func streamMistral(ctx context.Context, history []message, out chan<- string) error {
@@ -90,7 +167,10 @@ func streamMistral(ctx context.Context, history []message, out chan<- string) er
 	if apiKey == "" {
 		return errors.New("MISTRAL_API_KEY not set")
 	}
-	return streamOpenAICompat(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, "mistral-small-latest", history, out)
+	t0 := time.Now()
+	err := streamOpenAICompat(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, "mistral-small-latest", history, out)
+	pMetrics.record("mistral", float64(time.Since(t0).Milliseconds()), err != nil)
+	return err
 }
 
 // ================= OpenAI (ChatGPT) adapter =================
@@ -103,7 +183,10 @@ func callOpenAI(history []message) (string, error) {
 	reqBody := chatRequest{Model: "gpt-4o-mini", Messages: history}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	return sendChatRequest(ctx, "https://api.openai.com/v1/chat/completions", apiKey, reqBody, "chatgpt")
+	t0 := time.Now()
+	res, err := sendChatRequest(ctx, "https://api.openai.com/v1/chat/completions", apiKey, reqBody, "chatgpt")
+	pMetrics.record("chatgpt", float64(time.Since(t0).Milliseconds()), err != nil)
+	return res, err
 }
 
 func streamOpenAI(ctx context.Context, history []message, out chan<- string) error {
@@ -111,7 +194,10 @@ func streamOpenAI(ctx context.Context, history []message, out chan<- string) err
 	if apiKey == "" {
 		return errors.New("OPENAI_API_KEY not set")
 	}
-	return streamOpenAICompat(ctx, "https://api.openai.com/v1/chat/completions", apiKey, "gpt-4o-mini", history, out)
+	t0 := time.Now()
+	err := streamOpenAICompat(ctx, "https://api.openai.com/v1/chat/completions", apiKey, "gpt-4o-mini", history, out)
+	pMetrics.record("chatgpt", float64(time.Since(t0).Milliseconds()), err != nil)
+	return err
 }
 
 // ================= Gemini adapter =================
@@ -139,17 +225,7 @@ func callGemini(history []message) (string, error) {
 	if apiKey == "" {
 		return "", errors.New("GEMINI_API_KEY environment variable is not set")
 	}
-	var contents []geminiContent
-	for _, m := range history {
-		role := m.Role
-		if role == "assistant" {
-			role = "model"
-		}
-		if role == "system" {
-			continue
-		}
-		contents = append(contents, geminiContent{Role: role, Parts: []geminiPart{{Text: m.Content}}})
-	}
+	contents := buildGeminiContents(history)
 	reqBody := geminiRequest{Contents: contents}
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
@@ -164,8 +240,10 @@ func callGemini(history []message) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	t0 := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		pMetrics.record("gemini", 0, true)
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -174,6 +252,7 @@ func callGemini(history []message) (string, error) {
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
+		pMetrics.record("gemini", 0, true)
 		return "", fmt.Errorf("gemini API error (status %d): %s", resp.StatusCode, string(body))
 	}
 	var result geminiResponse
@@ -183,18 +262,93 @@ func callGemini(history []message) (string, error) {
 	if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
 		return "", errors.New("gemini returned no candidates")
 	}
+	pMetrics.record("gemini", float64(time.Since(t0).Milliseconds()), false)
 	return result.Candidates[0].Content.Parts[0].Text, nil
 }
 
-// streamGemini: Gemini doesn't have a true SSE stream in v1beta for all keys,
-// so we fall back to the non-streaming call and emit the full text as one chunk.
+// streamGemini: Real token-level SSE streaming via Gemini's streamGenerateContent endpoint.
 func streamGemini(ctx context.Context, history []message, out chan<- string) error {
-	text, err := callGemini(history)
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		return errors.New("GEMINI_API_KEY not set")
+	}
+	contents := buildGeminiContents(history)
+	reqBody := geminiRequest{Contents: contents}
+	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
 	}
-	out <- text
-	return nil
+	url := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=" + apiKey
+	client := &http.Client{Timeout: 120 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	t0 := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		pMetrics.record("gemini", 0, true)
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		pMetrics.record("gemini", 0, true)
+		return fmt.Errorf("gemini stream error (%d): %s", resp.StatusCode, string(body))
+	}
+	// Gemini SSE chunk shape
+	type geminiStreamChunk struct {
+		Candidates []struct {
+			Content struct {
+				Parts []geminiPart `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+		var chunk geminiStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Candidates) > 0 && len(chunk.Candidates[0].Content.Parts) > 0 {
+			token := chunk.Candidates[0].Content.Parts[0].Text
+			if token != "" {
+				out <- token
+			}
+		}
+	}
+	pMetrics.record("gemini", float64(time.Since(t0).Milliseconds()), false)
+	return scanner.Err()
+}
+
+// buildGeminiContents converts OpenAI-style history to Gemini's content format.
+func buildGeminiContents(history []message) []geminiContent {
+	var contents []geminiContent
+	for _, m := range history {
+		role := m.Role
+		if role == "assistant" {
+			role = "model"
+		}
+		if role == "system" {
+			continue // Gemini doesn't support system role in v1beta contents
+		}
+		contents = append(contents, geminiContent{Role: role, Parts: []geminiPart{{Text: m.Content}}})
+	}
+	return contents
 }
 
 // ================= OpenAI-compatible SSE streaming helper =================
@@ -347,11 +501,20 @@ func sendChatRequest(ctx context.Context, url, apiKey string, reqBody chatReques
 
 // ================= Router =================
 
-func selectProvider(prompt string) string {
-	if len(prompt) > 300 {
-		return "mistral"
+// selectProvider picks the best provider using a composite score of
+// EMA latency (60 %) and cost-per-token (40 %). Falls back to groq
+// when no meaningful data exists yet.
+func selectProvider(_ string) string {
+	candidates := []string{"groq", "mistral", "gemini"} // exclude chatgpt from auto (higher cost)
+	best := candidates[0]
+	bestScore := pMetrics.score(best)
+	for _, p := range candidates[1:] {
+		if s := pMetrics.score(p); s < bestScore {
+			bestScore = s
+			best = p
+		}
 	}
-	return "groq"
+	return best
 }
 
 // ================= Database =================
@@ -761,6 +924,15 @@ func main() {
 	mux.HandleFunc("/stream", enableCORS(handleStream))
 	mux.HandleFunc("/history", enableCORS(handleHistory))
 	mux.HandleFunc("/summarize", enableCORS(handleSummarize))
+	// /metrics — live provider latency, cost, and routing scores
+	mux.HandleFunc("/metrics", enableCORS(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "only GET is allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(pMetrics.snapshot())
+	}))
 
 	server := &http.Server{
 		Addr:         ":" + port,

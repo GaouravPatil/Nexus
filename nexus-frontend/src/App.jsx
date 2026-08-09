@@ -3,6 +3,9 @@ import ReactMarkdown from 'react-markdown'
 import BlurText from './BlurText'
 import SideRays from './SideRays'
 import BorderGlow from './BorderGlow'
+import AuthModal from './AuthModal.jsx'
+import HistoryPanel from './HistoryPanel.jsx'
+import { supabase } from './supabaseClient.js'
 import './App.css'
 
 // Error boundary to prevent ReactMarkdown crashes from taking down the whole page
@@ -126,11 +129,32 @@ function App() {
   const [docsOpen, setDocsOpen] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // Auth state
+  const [user, setUser] = useState(null)         // Supabase user object or null
+  const [authReady, setAuthReady] = useState(false) // false = show auth modal
   const bottomRef = useRef(null)
 
   const currentConv = conversations.find((c) => c.id === currentId) ?? conversations[0]
   const messages = currentConv?.messages ?? []
   const isEmpty = messages.length === 0
+
+  // ── On mount: restore Supabase session (if env vars are set) ──
+  useEffect(() => {
+    // If Supabase isn't configured (no URL), skip auth entirely
+    if (!import.meta.env.VITE_SUPABASE_URL) {
+      setAuthReady(true)
+      return
+    }
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data.session?.user ?? null)
+      setAuthReady(true)
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => listener.subscription.unsubscribe()
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('nexus-convs', JSON.stringify(conversations))
@@ -421,6 +445,10 @@ function App() {
 
   return (
     <div className="page">
+      {/* Show auth modal until the user is resolved */}
+      {!authReady && (
+        <AuthModal onAuth={(u) => { setUser(u); setAuthReady(true) }} />
+      )}
       <SideRays
         speed={2.2}
         rayColor1="#D97757"
@@ -500,6 +528,30 @@ function App() {
             ☰
           </button>
           <div className="topbar-actions">
+            {/* User badge / sign-out */}
+            {user ? (
+              <div className="topbar-user">
+                <span className="topbar-user-email">{user.email}</span>
+                <button
+                  className="docs-btn"
+                  title="Sign out"
+                  onClick={async () => {
+                    await supabase.auth.signOut()
+                    setUser(null)
+                  }}
+                >
+                  Sign out
+                </button>
+              </div>
+            ) : (
+              <button className="docs-btn" onClick={() => setAuthReady(false)}>
+                <span className="docs-btn-icon">👤</span> Sign in
+              </button>
+            )}
+            {/* Cloud history panel */}
+            <button className="docs-btn" onClick={() => setHistoryOpen(true)}>
+              <span className="docs-btn-icon">🗄️</span> History
+            </button>
             <div className="topbar-dropdown-wrap">
               <button className="docs-btn" onClick={(e) => { e.stopPropagation(); setContactOpen((v) => !v); }}>
                 <span className="docs-btn-icon">✉</span> Contact
@@ -705,6 +757,8 @@ function App() {
           </div>
         </div>
       )}
+      {/* ── History Panel ── */}
+      {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} />}
     </div>
   )
 }

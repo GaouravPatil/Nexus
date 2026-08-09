@@ -319,6 +319,22 @@ body {
   gap: 0.5rem;
 }
 
+/* Signed-in user badge */
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.topbar-user-email {
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Positions the Contact dropdown relative to its trigger button */
 .topbar-dropdown-wrap {
   position: relative;
