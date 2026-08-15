@@ -565,9 +565,12 @@ function App() {
             {/* User badge / sign-out */}
             {user ? (
               <div className="topbar-user">
-                <span className="topbar-user-email">{user.email}</span>
+                <span className="topbar-user-badge" title={user.email}>
+                  <span className="topbar-user-icon">👤</span>
+                  <span className="topbar-user-email">{user.email}</span>
+                </span>
                 <button
-                  className="docs-btn"
+                  className="signout-btn"
                   title="Sign out"
                   onClick={async () => {
                     await supabase.auth.signOut()
