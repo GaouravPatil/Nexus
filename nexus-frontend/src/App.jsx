@@ -18,8 +18,8 @@ class MarkdownBoundary extends Component {
   }
 }
 
-const STREAM_URL = 'http://localhost:8080/stream'
-const SUMMARIZE_URL = 'http://localhost:8080/summarize'
+const STREAM_URL = 'https://nexus-fftl.onrender.com/stream'
+   const SUMMARIZE_URL = 'https://nexus-fftl.onrender.com/summarize'
 
 // Provider → brand colour map (module-level so it never re-creates)
 const PROVIDER_COLORS = {
