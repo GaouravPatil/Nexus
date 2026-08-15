@@ -31,6 +31,34 @@ const PROVIDER_COLORS = {
   auto: '#888',
 }
 
+// ── Dynamic time-of-day greeting (Claude style) ──
+function getDynamicGreeting(user) {
+  const hour = new Date().getHours()
+  let timeOfDay = 'day'
+  if (hour >= 5 && hour < 12) timeOfDay = 'morning'
+  else if (hour >= 12 && hour < 17) timeOfDay = 'afternoon'
+  else if (hour >= 17 && hour < 22) timeOfDay = 'evening'
+  else timeOfDay = 'night'
+
+  let name = ''
+  if (user?.email) {
+    name = user.email.split('@')[0]
+    name = name.charAt(0).toUpperCase() + name.slice(1)
+  } else if (user?.user_metadata?.full_name) {
+    name = user.user_metadata.full_name.split(' ')[0]
+  }
+
+  const salutation = timeOfDay === 'night' ? 'Late night coding' : `Good ${timeOfDay}`
+  return name ? `${salutation}, ${name}` : `${salutation}, Dev`
+}
+
+const STARTER_PROMPTS = [
+  { icon: '⚡', label: 'Debug & Fix', text: 'Help me debug an issue in my code architecture' },
+  { icon: '🚀', label: 'System Design', text: 'Explain how to design a high-throughput SSE microservice in Go' },
+  { icon: '🧠', label: 'Brainstorm Ideas', text: 'Give me 5 innovative features for an AI assistant web application' },
+  { icon: '📝', label: 'Summarize Text', text: 'Summarize the core architectural benefits of cross-model context handoff' },
+]
+
 // Each conversation tracks:
 //   messages  – display messages (role: user | assistant | error | handoff)
 //   history   – OpenAI-style [{role, content}] for the backend
@@ -126,7 +154,6 @@ function App() {
   const [provider, setProvider] = useState('auto')
   const [loading, setLoading] = useState(false)
   const [switchingModel, setSwitchingModel] = useState(false)
-  const [docsOpen, setDocsOpen] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -587,28 +614,47 @@ function App() {
                 </div>
               )}
             </div>
-            <button className="docs-btn" onClick={() => setDocsOpen(true)}>
+            <a
+              href="https://github.com/GaouravPatil/Nexus#readme"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="docs-btn"
+              title="View GitHub Documentation"
+            >
               <span className="docs-btn-icon">📖</span> Docs
-            </button>
+            </a>
           </div>
         </header>
 
         <div className="shell">
           {isEmpty ? (
-            /* ── Landing: greeting + composer centered ── */
+            /* ── Landing: dynamic greeting + composer + starter chips ── */
             <div className="landing">
               <div className="hero">
                 <BlurText
-                  text="Welcome Back, Dev"
+                  key={user?.email ?? 'dev'}
+                  text={getDynamicGreeting(user)}
                   animateBy="words"
                   direction="top"
                   className="hero-line hero-minimal"
                 />
                 <p className="hero-subtext">
-                  One prompt — Cross-model persistent memory
+                  What would you like to build or explore today?
                 </p>
               </div>
               <Composer {...composerProps} />
+              <div className="starter-chips">
+                {STARTER_PROMPTS.map((chip, idx) => (
+                  <button
+                    key={idx}
+                    className="starter-chip"
+                    onClick={() => setPrompt(chip.text)}
+                  >
+                    <span className="starter-chip-icon">{chip.icon}</span>
+                    <span className="starter-chip-label">{chip.label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             /* ── Chat mode: messages + bottom composer ── */
@@ -709,61 +755,6 @@ function App() {
         </div>
       </div>
 
-      {/* ── Docs Modal ── */}
-      {docsOpen && (
-        <div className="docs-overlay" onClick={() => setDocsOpen(false)}>
-          <div className="docs-panel" onClick={(e) => e.stopPropagation()}>
-            <div className="docs-panel-header">
-              <h2 className="docs-title">How to use Nexus</h2>
-              <button className="docs-close" onClick={() => setDocsOpen(false)}>×</button>
-            </div>
-
-            <div className="docs-body">
-              <div className="docs-section">
-                <h3>🚀 Getting started</h3>
-                <p>Type any question or prompt and press <kbd>Enter</kbd> (or ↑) to send.</p>
-              </div>
-
-              <div className="docs-section">
-                <h3>🤖 Choosing a provider</h3>
-                <ul>
-                  <li><strong>Auto</strong> — Nexus picks the best available model.</li>
-                  <li><strong>Groq</strong> — Ultra-fast inference via Groq's LPU hardware.</li>
-                  <li><strong>Mistral</strong> — Mistral AI's flagship models.</li>
-                  <li><strong>ChatGPT</strong> — OpenAI's <code>gpt-4o-mini</code> model.</li>
-                  <li><strong>Gemini</strong> — Google's Gemini 2.5 Flash model.</li>
-                  <li><strong>Ensemble</strong> — Queries both Groq &amp; Mistral in parallel and synthesizes a cross-validated answer.</li>
-                </ul>
-              </div>
-
-              <div className="docs-section">
-                <h3>🔄 Switching models mid-chat</h3>
-                <p>
-                  Change the AI model at any point. Nexus automatically generates a{' '}
-                  <strong>context handoff brief</strong> — the new model analyses the full chat
-                  history and absorbs it before responding, so there is no gap in knowledge.
-                </p>
-              </div>
-
-              <div className="docs-section">
-                <h3>💬 Chat history</h3>
-                <p>
-                  Every conversation is saved in your browser. Click any item in the sidebar to revisit it.
-                  Use <strong>✎</strong> to start a new conversation. Delete any chat with ×.
-                </p>
-              </div>
-
-              <div className="docs-section">
-                <h3>⌨️ Keyboard shortcuts</h3>
-                <ul>
-                  <li><kbd>Enter</kbd> — send message</li>
-                  <li><kbd>Shift + Enter</kbd> — new line in message</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
       {/* ── History Panel ── */}
       {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} />}
     </div>
