@@ -781,6 +781,8 @@ textarea::-webkit-scrollbar-thumb:hover {
   border: none;
   outline: none;
   resize: none;
+  appearance: none;
+  -webkit-appearance: none;
   font-family: inherit;
   font-size: 0.93rem;
   line-height: 1.55;
@@ -788,6 +790,7 @@ textarea::-webkit-scrollbar-thumb:hover {
   padding: 0.35rem 0;
   background: transparent;
   color: var(--ink);
+  overflow-y: auto;
 }
 
 .composer textarea::placeholder {
