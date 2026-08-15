@@ -3,8 +3,10 @@
 .env.*
 !.env.example
 
-# Temp
+# Temp & Local DB
 tmp/
+*.db
+*.sqlite
 
 # Terraform
 **/.terraform/
@@ -21,8 +23,9 @@ crash.log
 crash.*.log
 
 # AWS CLI distribution (binary, not source)
-aws/dist/
-aws/__pycache__/
+aws/
+awscliv2.zip
+*.zip
 
 # Go build artifacts
 *.exe
@@ -32,6 +35,8 @@ aws/__pycache__/
 *.dylib
 /bin/
 /dist/
+main
+api
 
 # Node / Frontend
 node_modules/

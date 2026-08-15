@@ -5,7 +5,7 @@ import SideRays from './SideRays'
 import BorderGlow from './BorderGlow'
 import AuthModal from './AuthModal.jsx'
 import HistoryPanel from './HistoryPanel.jsx'
-import { supabase } from './supabaseClient.js'
+import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 import './App.css'
 
 // Error boundary to prevent ReactMarkdown crashes from taking down the whole page
@@ -141,20 +141,27 @@ function App() {
 
   // ── On mount: restore Supabase session (if env vars are set) ──
   useEffect(() => {
-    // If Supabase isn't configured (no URL), skip auth entirely
-    if (!import.meta.env.VITE_SUPABASE_URL) {
+    if (!isSupabaseConfigured) {
       setAuthReady(true)
       return
     }
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null)
-      setAuthReady(true)
-    })
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        setUser(data?.session?.user ?? null)
+      })
+      .catch((err) => {
+        console.warn('Supabase getSession failed:', err)
+      })
+      .finally(() => {
+        setAuthReady(true)
+      })
+
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
     })
-    return () => listener.subscription.unsubscribe()
+    return () => listener?.subscription?.unsubscribe()
   }, [])
+
 
   useEffect(() => {
     localStorage.setItem('nexus-convs', JSON.stringify(conversations))

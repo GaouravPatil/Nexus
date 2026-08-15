@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { supabase } from './supabaseClient.js'
+import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 import './AuthModal.css'
 
 export default function AuthModal({ onAuth }) {
@@ -16,6 +16,9 @@ export default function AuthModal({ onAuth }) {
     setInfo(null)
     setLoading(true)
     try {
+      if (!isSupabaseConfigured) {
+        throw new Error('Supabase Auth is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to nexus-frontend/.env')
+      }
       if (tab === 'login') {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error

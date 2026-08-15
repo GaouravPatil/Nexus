@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	_ "modernc.org/sqlite"
 )
 
 // ================= Provider Metrics (Smart Router) =================
@@ -519,32 +521,83 @@ func selectProvider(_ string) string {
 
 // ================= Database =================
 
-var dbPool *pgxpool.Pool
+type DBBackend struct {
+	driver string // "postgres" or "sqlite"
+	pgPool *pgxpool.Pool
+	sqlDB  *sql.DB
+}
+
+var activeDB *DBBackend
 
 func connectDB() error {
 	dbURL := os.Getenv("SUPABASE_DB_URL")
-	if dbURL == "" {
-		return errors.New("SUPABASE_DB_URL environment variable is not set")
+	if dbURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		pool, err := pgxpool.New(ctx, dbURL)
+		if err == nil {
+			if err := pool.Ping(ctx); err == nil {
+				log.Println("connected to Supabase PostgreSQL")
+				_, _ = pool.Exec(context.Background(), `
+					CREATE TABLE IF NOT EXISTS queries (
+						id BIGSERIAL PRIMARY KEY,
+						prompt TEXT NOT NULL,
+						provider TEXT NOT NULL,
+						answer TEXT NOT NULL,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+					);
+				`)
+				activeDB = &DBBackend{driver: "postgres", pgPool: pool}
+				return nil
+			}
+			log.Printf("warning: could not connect to Supabase PostgreSQL (%v)", err)
+		} else {
+			log.Printf("warning: invalid Supabase DB URL configuration (%v)", err)
+		}
+	} else {
+		log.Println("SUPABASE_DB_URL not configured")
 	}
-	pool, err := pgxpool.New(context.Background(), dbURL)
+
+	log.Println("initiating local SQLite database fallback (nexus.db)")
+	sdb, err := sql.Open("sqlite", "nexus.db")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open local sqlite db: %w", err)
 	}
-	if err := pool.Ping(context.Background()); err != nil {
-		return err
+
+	_, err = sdb.Exec(`
+		CREATE TABLE IF NOT EXISTS queries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			prompt TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			answer TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create sqlite schema: %w", err)
 	}
-	dbPool = pool
+
+	activeDB = &DBBackend{driver: "sqlite", sqlDB: sdb}
+	log.Println("connected to local SQLite database (nexus.db)")
 	return nil
 }
 
 func saveQuery(prompt, provider, answer string) {
-	if dbPool == nil {
+	if activeDB == nil {
 		return
 	}
-	_, err := dbPool.Exec(context.Background(),
-		"insert into queries (prompt, provider, answer) values ($1, $2, $3)",
-		prompt, provider, answer,
-	)
+	var err error
+	if activeDB.driver == "postgres" {
+		_, err = activeDB.pgPool.Exec(context.Background(),
+			"INSERT INTO queries (prompt, provider, answer) VALUES ($1, $2, $3)",
+			prompt, provider, answer,
+		)
+	} else if activeDB.driver == "sqlite" {
+		_, err = activeDB.sqlDB.Exec(
+			"INSERT INTO queries (prompt, provider, answer) VALUES (?, ?, ?)",
+			prompt, provider, answer,
+		)
+	}
 	if err != nil {
 		log.Println("saveQuery error:", err)
 	}
@@ -855,27 +908,47 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "only GET is allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if dbPool == nil {
+	if activeDB == nil {
 		http.Error(w, "database not connected", http.StatusServiceUnavailable)
 		return
 	}
-	rows, err := dbPool.Query(context.Background(),
-		"select id, prompt, provider, answer, created_at from queries order by created_at desc limit 100",
-	)
-	if err != nil {
-		log.Println("handleHistory query error:", err)
-		http.Error(w, "failed to fetch history", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
 	var records []historyRecord
-	for rows.Next() {
-		var rec historyRecord
-		if err := rows.Scan(&rec.ID, &rec.Prompt, &rec.Provider, &rec.Answer, &rec.CreatedAt); err != nil {
-			log.Println("handleHistory scan error:", err)
-			continue
+	if activeDB.driver == "postgres" {
+		rows, err := activeDB.pgPool.Query(context.Background(),
+			"SELECT id, prompt, provider, answer, created_at::text FROM queries ORDER BY created_at DESC LIMIT 100",
+		)
+		if err != nil {
+			log.Println("handleHistory query error:", err)
+			http.Error(w, "failed to fetch history", http.StatusInternalServerError)
+			return
 		}
-		records = append(records, rec)
+		defer rows.Close()
+		for rows.Next() {
+			var rec historyRecord
+			if err := rows.Scan(&rec.ID, &rec.Prompt, &rec.Provider, &rec.Answer, &rec.CreatedAt); err != nil {
+				log.Println("handleHistory scan error:", err)
+				continue
+			}
+			records = append(records, rec)
+		}
+	} else if activeDB.driver == "sqlite" {
+		rows, err := activeDB.sqlDB.Query(
+			"SELECT id, prompt, provider, answer, datetime(created_at) FROM queries ORDER BY created_at DESC LIMIT 100",
+		)
+		if err != nil {
+			log.Println("handleHistory sqlite query error:", err)
+			http.Error(w, "failed to fetch history", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var rec historyRecord
+			if err := rows.Scan(&rec.ID, &rec.Prompt, &rec.Provider, &rec.Answer, &rec.CreatedAt); err != nil {
+				log.Println("handleHistory scan error:", err)
+				continue
+			}
+			records = append(records, rec)
+		}
 	}
 	if records == nil {
 		records = []historyRecord{}
@@ -910,15 +983,20 @@ func main() {
 		port = "8080"
 	}
 	if err := connectDB(); err != nil {
-		log.Println("warning: could not connect to database:", err)
-		log.Println("server will still run, but queries won't be saved")
-	} else {
-		log.Println("connected to Supabase")
+		log.Println("warning: database initialization failed:", err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", enableCORS(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		dbDriver := "none"
+		if activeDB != nil {
+			dbDriver = activeDB.driver
+		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":   "ok",
+			"database": dbDriver,
+		})
 	}))
 	mux.HandleFunc("/query", enableCORS(handleQuery))
 	mux.HandleFunc("/stream", enableCORS(handleStream))
