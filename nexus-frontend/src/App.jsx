@@ -18,8 +18,10 @@ class MarkdownBoundary extends Component {
   }
 }
 
-const STREAM_URL = 'https://nexus-fftl.onrender.com/stream'
-   const SUMMARIZE_URL = 'https://nexus-fftl.onrender.com/summarize'
+const API_URL = import.meta.env.VITE_API_URL
+
+const STREAM_URL = `${API_URL}/stream`
+const SUMMARIZE_URL = `${API_URL}/summarize`
 
 // Provider → brand colour map (module-level so it never re-creates)
 const PROVIDER_COLORS = {

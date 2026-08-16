@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import './HistoryPanel.css'
 
-const HISTORY_URL = 'https://nexus-fftl.onrender.com'
+const API_URL = import.meta.env.VITE_API_URL
+
+const HISTORY_URL = `${API_URL}/history`
 
 const PROVIDER_COLORS = {
   groq: '#D97757',
