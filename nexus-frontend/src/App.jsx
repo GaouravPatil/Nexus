@@ -44,7 +44,7 @@ class MarkdownBoundary extends Component {
   }
 }
 
-const API_URL = import.meta.env.VITE_API_URL
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
 
 const STREAM_URL = `${API_URL}/stream`
 const SUMMARIZE_URL = `${API_URL}/summarize`

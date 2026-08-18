@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import { Database, Search, X, AlertTriangle, ChevronUp, ChevronDown, Sparkles, Zap, Wind, Bot, Gem, Layers } from 'lucide-react'
 import './HistoryPanel.css'
 
-const API_URL = import.meta.env.VITE_API_URL
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
 
 const HISTORY_URL = `${API_URL}/history`
 

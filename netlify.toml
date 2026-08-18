@@ -1,4 +1,0 @@
-[build]
-  base = "nexus-frontend"
-  command = "npm run build"
-  publish = "dist"

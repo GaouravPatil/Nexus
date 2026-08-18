@@ -26,7 +26,7 @@ import (
 
 // providerCostPer1K holds approximate cost per 1K output tokens in USD.
 var providerCostPer1K = map[string]float64{
-	"groq":    0.00059, // llama-3.3-70b
+	"groq":    0.00059, // groq/compound
 	"mistral": 0.00200, // mistral-small-latest
 	"chatgpt": 0.00600, // gpt-4o-mini
 	"gemini":  0.00035, // gemini-2.5-flash
@@ -128,7 +128,7 @@ func callGroq(history []message) (string, error) {
 	if apiKey == "" {
 		return "", errors.New("GROQ_API_KEY environment variable is not set")
 	}
-	reqBody := chatRequest{Model: "llama-3.3-70b-versatile", Messages: history}
+	reqBody := chatRequest{Model: "groq/compound", Messages: history}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	t0 := time.Now()
@@ -143,7 +143,7 @@ func streamGroq(ctx context.Context, history []message, out chan<- string) error
 		return errors.New("GROQ_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, "llama-3.3-70b-versatile", history, out)
+	err := streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, "groq/compound", history, out)
 	pMetrics.record("groq", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
