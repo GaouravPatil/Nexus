@@ -1,5 +1,31 @@
 import { useState, useRef, useEffect, Component } from 'react'
 import ReactMarkdown from 'react-markdown'
+import {
+  SquarePen,
+  MessageSquare,
+  X,
+  Menu,
+  User,
+  LogOut,
+  Database,
+  Mail,
+  Phone,
+  Clock,
+  BookOpen,
+  Send,
+  ChevronDown,
+  Check,
+  AlertCircle,
+  Zap,
+  Rocket,
+  Brain,
+  FileText,
+  Sparkles,
+  Wind,
+  Bot,
+  Gem,
+  Layers
+} from 'lucide-react'
 import BlurText from './BlurText'
 import SideRays from './SideRays'
 import BorderGlow from './BorderGlow'
@@ -33,6 +59,15 @@ const PROVIDER_COLORS = {
   auto: '#888',
 }
 
+const MODEL_ICONS = {
+  auto: Sparkles,
+  groq: Zap,
+  mistral: Wind,
+  chatgpt: Bot,
+  gemini: Gem,
+  ensemble: Layers,
+}
+
 // ── Dynamic time-of-day greeting (Claude style) ──
 function getDynamicGreeting(user) {
   const hour = new Date().getHours()
@@ -55,10 +90,10 @@ function getDynamicGreeting(user) {
 }
 
 const STARTER_PROMPTS = [
-  { icon: '⚡', label: 'Debug & Fix', text: 'Help me debug an issue in my code architecture' },
-  { icon: '🚀', label: 'System Design', text: 'Explain how to design a high-throughput SSE microservice in Go' },
-  { icon: '🧠', label: 'Brainstorm Ideas', text: 'Give me 5 innovative features for an AI assistant web application' },
-  { icon: '📝', label: 'Summarize Text', text: 'Summarize the core architectural benefits of cross-model context handoff' },
+  { icon: Zap, label: 'Debug & Fix', text: 'Help me debug an issue in my code architecture' },
+  { icon: Rocket, label: 'System Design', text: 'Explain how to design a high-throughput SSE microservice in Go' },
+  { icon: Brain, label: 'Brainstorm Ideas', text: 'Give me 5 innovative features for an AI assistant web application' },
+  { icon: FileText, label: 'Summarize Text', text: 'Summarize the core architectural benefits of cross-model context handoff' },
 ]
 
 // Each conversation tracks:
@@ -74,6 +109,80 @@ const makeConv = () => ({
   history: [],
   handoffs: [],
 })
+
+// ─── Custom In-Screen Model Selector Component ──────────
+function ModelSelector({ provider, onProviderChange, disabled }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  const providers = [
+    { id: 'auto', name: 'Auto', icon: Sparkles },
+    { id: 'groq', name: 'Groq', icon: Zap },
+    { id: 'mistral', name: 'Mistral', icon: Wind },
+    { id: 'chatgpt', name: 'ChatGPT', icon: Bot },
+    { id: 'gemini', name: 'Gemini', icon: Gem },
+    { id: 'ensemble', name: 'Ensemble', icon: Layers },
+  ]
+
+  const activeProvider = providers.find((p) => p.id === provider) ?? providers[0]
+  const ActiveIcon = activeProvider.icon
+
+  useEffect(() => {
+    if (!open) return
+    const handleClickOutside = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('touchstart', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('touchstart', handleClickOutside)
+    }
+  }, [open])
+
+  return (
+    <div className="custom-provider-select-wrap" ref={ref}>
+      <button
+        type="button"
+        className={`custom-provider-btn ${open ? 'open' : ''}`}
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        title="Choose AI provider"
+      >
+        <ActiveIcon size={14} style={{ color: PROVIDER_COLORS[provider] ?? '#888' }} />
+        <span className="custom-provider-name">{activeProvider.name}</span>
+        <ChevronDown size={13} className="custom-provider-chevron" />
+      </button>
+
+      {open && (
+        <div className="custom-provider-menu">
+          <div className="custom-provider-menu-title">Select Model</div>
+          {providers.map((p) => {
+            const IconComp = p.icon
+            const isSelected = p.id === provider
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className={`custom-provider-option ${isSelected ? 'active' : ''}`}
+                onClick={() => {
+                  onProviderChange(p.id)
+                  setOpen(false)
+                }}
+              >
+                <IconComp size={14} style={{ color: PROVIDER_COLORS[p.id] ?? '#888', flexShrink: 0 }} />
+                <span className="custom-provider-option-name">{p.name}</span>
+                {isSelected && <Check size={13} className="custom-provider-check" />}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ─── Composer component (MUST be module-level, not nested inside App) ──────────
 // Defining it inside App causes it to be re-created on every render, which
@@ -105,26 +214,17 @@ function Composer({ prompt, onPromptChange, onSubmit, onKeyDown, onProviderChang
             autoFocus
           />
           <div className="composer-actions">
-            <select
-              className="provider-select-inline"
-              value={provider}
-              onChange={(e) => onProviderChange(e.target.value)}
-              title="Choose AI provider"
+            <ModelSelector
+              provider={provider}
+              onProviderChange={onProviderChange}
               disabled={switchingModel}
-            >
-              <option value="auto">Auto</option>
-              <option value="groq">Groq</option>
-              <option value="mistral">Mistral</option>
-              <option value="chatgpt">ChatGPT</option>
-              <option value="gemini">Gemini</option>
-              <option value="ensemble">Ensemble</option>
-            </select>
+            />
             <button
               type="submit"
               disabled={loading || switchingModel || !prompt.trim()}
               aria-label="Send"
             >
-              {loading ? '…' : '↑'}
+              {loading ? '…' : <Send size={14} style={{ display: 'block', margin: 'auto' }} />}
             </button>
           </div>
         </form>
@@ -161,7 +261,7 @@ function App() {
     if (typeof window !== 'undefined') {
       return window.innerWidth >= 768
     }
-    return true
+    return false
   })
   const [historyOpen, setHistoryOpen] = useState(false)
   // Auth state
@@ -172,6 +272,18 @@ function App() {
   const currentConv = conversations.find((c) => c.id === currentId) ?? conversations[0]
   const messages = currentConv?.messages ?? []
   const isEmpty = messages.length === 0
+
+  // Responsive sidebar handling: Guarantee sidebar is hidden on mobile launch & on resize
+  useEffect(() => {
+    const checkViewport = () => {
+      if (typeof window !== 'undefined' && window.innerWidth < 768) {
+        setSidebarOpen(false)
+      }
+    }
+    checkViewport()
+    window.addEventListener('resize', checkViewport)
+    return () => window.removeEventListener('resize', checkViewport)
+  }, [])
 
   // ── On mount: restore Supabase session (if env vars are set) ──
   useEffect(() => {
@@ -539,7 +651,7 @@ function App() {
             <span className="brand-name">Nexus</span>
           </div>
           <button className="new-chat-btn" onClick={startNewChat} title="New chat">
-            ✎
+            <SquarePen size={16} />
           </button>
         </div>
 
@@ -552,21 +664,24 @@ function App() {
               className={`sidebar-item ${conv.id === currentId ? 'active' : ''}`}
               onClick={() => selectConv(conv.id)}
             >
-              <span className="sidebar-item-icon">💬</span>
+              <span className="sidebar-item-icon"><MessageSquare size={14} /></span>
               <span className="sidebar-item-title">{conv.title}</span>
-              {conv.provider && conv.provider !== 'auto' && (
-                <span
-                  className="sidebar-provider-dot"
-                  style={{ backgroundColor: PROVIDER_COLORS[conv.provider] ?? '#888' }}
-                  title={conv.provider}
-                />
-              )}
+              {conv.provider && conv.provider !== 'auto' && (() => {
+                const IconComp = MODEL_ICONS[conv.provider] ?? Sparkles
+                return (
+                  <IconComp
+                    size={13}
+                    style={{ color: PROVIDER_COLORS[conv.provider] ?? '#888', flexShrink: 0, marginLeft: 'auto' }}
+                    title={conv.provider}
+                  />
+                )
+              })()}
               <button
                 className="sidebar-delete"
                 onClick={(e) => deleteConv(conv.id, e)}
                 title="Delete"
               >
-                ×
+                <X size={14} />
               </button>
             </div>
           ))}
@@ -581,14 +696,14 @@ function App() {
             onClick={() => setSidebarOpen((v) => !v)}
             title="Toggle sidebar"
           >
-            ☰
+            <Menu size={18} />
           </button>
           <div className="topbar-actions">
             {/* User badge / sign-out */}
             {user ? (
               <div className="topbar-user">
                 <span className="topbar-user-badge" title={user.email}>
-                  <span className="topbar-user-icon">👤</span>
+                  <span className="topbar-user-icon"><User size={13} /></span>
                   <span className="topbar-user-email">{user.email}</span>
                 </span>
                 <button
@@ -599,23 +714,24 @@ function App() {
                     setUser(null)
                   }}
                 >
+                  <LogOut size={13} />
                   <span className="topbar-btn-text">Sign out</span>
                 </button>
               </div>
             ) : (
               <button className="docs-btn" onClick={() => setAuthReady(false)} title="Sign in">
-                <span className="docs-btn-icon">👤</span>
+                <span className="docs-btn-icon"><User size={14} /></span>
                 <span className="topbar-btn-text">Sign in</span>
               </button>
             )}
             {/* Cloud history panel */}
             <button className="docs-btn" onClick={() => setHistoryOpen(true)} title="History">
-              <span className="docs-btn-icon">🗄️</span>
+              <span className="docs-btn-icon"><Database size={14} /></span>
               <span className="topbar-btn-text">History</span>
             </button>
             <div className="topbar-dropdown-wrap">
               <button className="docs-btn" onClick={(e) => { e.stopPropagation(); setContactOpen((v) => !v); }} title="Contact">
-                <span className="docs-btn-icon">✉</span>
+                <span className="docs-btn-icon"><Mail size={14} /></span>
                 <span className="topbar-btn-text">Contact</span>
               </button>
               {contactOpen && (
@@ -623,19 +739,19 @@ function App() {
                   <p className="topbar-dropdown-heading">Get in touch</p>
                   <ul className="topbar-contact-list">
                     <li>
-                      <span className="contact-icon">✉</span>
+                      <span className="contact-icon"><Mail size={14} /></span>
                       <a href="mailto:patilgaourav304@gmail.com" className="contact-link">
                         patilgaourav304@gmail.com
                       </a>
                     </li>
                     <li>
-                      <span className="contact-icon">📞</span>
+                      <span className="contact-icon"><Phone size={14} /></span>
                       <a href="tel:+919834892067" className="contact-link">
                         +91 98348 92067
                       </a>
                     </li>
                     <li>
-                      <span className="contact-icon">🕐</span>
+                      <span className="contact-icon"><Clock size={14} /></span>
                       <span className="contact-available">Available 24 / 7</span>
                     </li>
                   </ul>
@@ -649,7 +765,7 @@ function App() {
               className="docs-btn"
               title="View GitHub Documentation"
             >
-              <span className="docs-btn-icon">📖</span>
+              <span className="docs-btn-icon"><BookOpen size={14} /></span>
               <span className="topbar-btn-text">Docs</span>
             </a>
           </div>
@@ -673,16 +789,19 @@ function App() {
               </div>
               <Composer {...composerProps} />
               <div className="starter-chips">
-                {STARTER_PROMPTS.map((chip, idx) => (
-                  <button
-                    key={idx}
-                    className="starter-chip"
-                    onClick={() => setPrompt(chip.text)}
-                  >
-                    <span className="starter-chip-icon">{chip.icon}</span>
-                    <span className="starter-chip-label">{chip.label}</span>
-                  </button>
-                ))}
+                {STARTER_PROMPTS.map((chip, idx) => {
+                  const IconComp = chip.icon
+                  return (
+                    <button
+                      key={idx}
+                      className="starter-chip"
+                      onClick={() => setPrompt(chip.text)}
+                    >
+                      <span className="starter-chip-icon"><IconComp size={15} /></span>
+                      <span className="starter-chip-label">{chip.label}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           ) : (

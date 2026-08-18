@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ArrowRight } from 'lucide-react'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 import './AuthModal.css'
 
@@ -104,7 +105,7 @@ export default function AuthModal({ onAuth }) {
         </form>
 
         <p className="auth-skip" onClick={() => onAuth(null)}>
-          Continue without account →
+          Continue without account <ArrowRight size={13} style={{ display: 'inline', verticalAlign: 'middle', marginLeft: '4px' }} />
         </p>
       </div>
     </div>

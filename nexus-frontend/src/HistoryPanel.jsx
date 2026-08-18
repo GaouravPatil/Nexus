@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { Database, Search, X, AlertTriangle, ChevronUp, ChevronDown, Sparkles, Zap, Wind, Bot, Gem, Layers } from 'lucide-react'
 import './HistoryPanel.css'
 
 const API_URL = import.meta.env.VITE_API_URL
@@ -12,6 +13,15 @@ const PROVIDER_COLORS = {
   chatgpt: '#10a37f',
   gemini: '#E8A820',
   ensemble: '#c084fc',
+}
+
+const MODEL_ICONS = {
+  auto: Sparkles,
+  groq: Zap,
+  mistral: Wind,
+  chatgpt: Bot,
+  gemini: Gem,
+  ensemble: Layers,
 }
 
 function timeAgo(isoStr) {
@@ -54,16 +64,16 @@ export default function HistoryPanel({ onClose }) {
         {/* Header */}
         <div className="history-header">
           <div className="history-title-row">
-            <span className="history-icon">🗄️</span>
+            <Database size={18} className="history-icon" />
             <h2 className="history-title">Cloud History</h2>
             <span className="history-count">{records.length} queries</span>
           </div>
-          <button className="history-close" onClick={onClose}>×</button>
+          <button className="history-close" onClick={onClose}><X size={16} /></button>
         </div>
 
         {/* Search */}
         <div className="history-search-wrap">
-          <span className="history-search-icon">🔍</span>
+          <Search size={15} className="history-search-icon" />
           <input
             className="history-search"
             placeholder="Search prompts and answers…"
@@ -72,7 +82,7 @@ export default function HistoryPanel({ onClose }) {
             autoFocus
           />
           {search && (
-            <button className="history-search-clear" onClick={() => setSearch('')}>×</button>
+            <button className="history-search-clear" onClick={() => setSearch('')}><X size={14} /></button>
           )}
         </div>
 
@@ -87,7 +97,7 @@ export default function HistoryPanel({ onClose }) {
 
           {error && (
             <div className="history-state history-state-error">
-              <span>⚠️</span>
+              <AlertTriangle size={22} />
               <p>{error}</p>
               <p className="history-state-hint">Make sure the Go server is running on localhost:8080</p>
             </div>
@@ -95,48 +105,53 @@ export default function HistoryPanel({ onClose }) {
 
           {!loading && !error && filtered.length === 0 && (
             <div className="history-state">
-              <span style={{ fontSize: '2rem' }}>🔍</span>
+              <Search size={28} style={{ opacity: 0.6 }} />
               <p>{search ? 'No results for that search.' : 'No queries saved yet.'}</p>
             </div>
           )}
 
-          {!loading && !error && filtered.map(record => (
-            <div
-              key={record.id}
-              className={`history-item ${expanded === record.id ? 'expanded' : ''}`}
-              onClick={() => setExpanded(expanded === record.id ? null : record.id)}
-            >
-              <div className="history-item-header">
-                <span
-                  className="history-provider-dot"
-                  style={{ backgroundColor: PROVIDER_COLORS[record.provider] ?? '#888' }}
-                  title={record.provider}
-                />
-                <p className="history-prompt">{record.prompt}</p>
-                <span className="history-time">{timeAgo(record.created_at)}</span>
-                <span className="history-chevron">{expanded === record.id ? '▲' : '▼'}</span>
-              </div>
-
-              {expanded === record.id && (
-                <div className="history-answer">
-                  <div className="history-answer-label">
-                    <span
-                      className="history-answer-provider"
-                      style={{ color: PROVIDER_COLORS[record.provider] ?? '#888' }}
-                    >
-                      {record.provider}
-                    </span>
-                    <span className="history-answer-date">
-                      {new Date(record.created_at).toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="history-answer-text">
-                    <ReactMarkdown>{record.answer}</ReactMarkdown>
-                  </div>
+          {!loading && !error && filtered.map(record => {
+            const ProviderIcon = MODEL_ICONS[record.provider] ?? Sparkles
+            return (
+              <div
+                key={record.id}
+                className={`history-item ${expanded === record.id ? 'expanded' : ''}`}
+                onClick={() => setExpanded(expanded === record.id ? null : record.id)}
+              >
+                <div className="history-item-header">
+                  <ProviderIcon
+                    size={14}
+                    style={{ color: PROVIDER_COLORS[record.provider] ?? '#888', flexShrink: 0 }}
+                    title={record.provider}
+                  />
+                  <p className="history-prompt">{record.prompt}</p>
+                  <span className="history-time">{timeAgo(record.created_at)}</span>
+                  <span className="history-chevron">
+                    {expanded === record.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                  </span>
                 </div>
-              )}
-            </div>
-          ))}
+
+                {expanded === record.id && (
+                  <div className="history-answer">
+                    <div className="history-answer-label">
+                      <span
+                        className="history-answer-provider"
+                        style={{ color: PROVIDER_COLORS[record.provider] ?? '#888' }}
+                      >
+                        {record.provider}
+                      </span>
+                      <span className="history-answer-date">
+                        {new Date(record.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="history-answer-text">
+                      <ReactMarkdown>{record.answer}</ReactMarkdown>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
