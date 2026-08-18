@@ -205,3 +205,21 @@
   max-height: 250px;
   overflow-y: auto;
 }
+
+@media (max-width: 600px) {
+  .history-panel {
+    width: 100vw;
+    height: 100vh;
+    border-left: none;
+    border-radius: 0;
+  }
+  .history-header {
+    padding: 0.9rem 1rem;
+  }
+  .history-search-wrap {
+    margin: 0.75rem 1rem 0.35rem;
+  }
+  .history-body {
+    padding: 0.5rem 1rem 1rem;
+  }
+}

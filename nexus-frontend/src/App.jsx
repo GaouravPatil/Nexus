@@ -157,7 +157,12 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [switchingModel, setSwitchingModel] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768
+    }
+    return true
+  })
   const [historyOpen, setHistoryOpen] = useState(false)
   // Auth state
   const [user, setUser] = useState(null)         // Supabase user object or null
@@ -224,6 +229,9 @@ function App() {
     setCurrentId(conv.id)
     setPrompt('')
     setProvider('auto')  // FIX: reset provider selector when starting new chat
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false)
+    }
   }
 
   function selectConv(id) {
@@ -231,6 +239,9 @@ function App() {
     // Sync the provider selector to whatever the selected conv is using
     const conv = conversations.find((c) => c.id === id)
     if (conv) setProvider(conv.provider ?? 'auto')
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      setSidebarOpen(false)
+    }
   }
 
   function deleteConv(id, e) {
@@ -500,6 +511,15 @@ function App() {
         className="page-rays"
       />
 
+      {/* ── Sidebar Backdrop (mobile) ── */}
+      {sidebarOpen && (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* ── Sidebar ── */}
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : 'sidebar-closed'}`}>
         <div className="sidebar-header">
@@ -579,21 +599,24 @@ function App() {
                     setUser(null)
                   }}
                 >
-                  Sign out
+                  <span className="topbar-btn-text">Sign out</span>
                 </button>
               </div>
             ) : (
-              <button className="docs-btn" onClick={() => setAuthReady(false)}>
-                <span className="docs-btn-icon">👤</span> Sign in
+              <button className="docs-btn" onClick={() => setAuthReady(false)} title="Sign in">
+                <span className="docs-btn-icon">👤</span>
+                <span className="topbar-btn-text">Sign in</span>
               </button>
             )}
             {/* Cloud history panel */}
-            <button className="docs-btn" onClick={() => setHistoryOpen(true)}>
-              <span className="docs-btn-icon">🗄️</span> History
+            <button className="docs-btn" onClick={() => setHistoryOpen(true)} title="History">
+              <span className="docs-btn-icon">🗄️</span>
+              <span className="topbar-btn-text">History</span>
             </button>
             <div className="topbar-dropdown-wrap">
-              <button className="docs-btn" onClick={(e) => { e.stopPropagation(); setContactOpen((v) => !v); }}>
-                <span className="docs-btn-icon">✉</span> Contact
+              <button className="docs-btn" onClick={(e) => { e.stopPropagation(); setContactOpen((v) => !v); }} title="Contact">
+                <span className="docs-btn-icon">✉</span>
+                <span className="topbar-btn-text">Contact</span>
               </button>
               {contactOpen && (
                 <div className="topbar-dropdown" onClick={(e) => e.stopPropagation()}>
@@ -626,7 +649,8 @@ function App() {
               className="docs-btn"
               title="View GitHub Documentation"
             >
-              <span className="docs-btn-icon">📖</span> Docs
+              <span className="docs-btn-icon">📖</span>
+              <span className="topbar-btn-text">Docs</span>
             </a>
           </div>
         </header>
