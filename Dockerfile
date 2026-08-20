@@ -8,7 +8,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /nexus ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -p 1 -o /nexus ./cmd/api
 
 # --- Stage 2: Run ---
 FROM alpine:3.20
