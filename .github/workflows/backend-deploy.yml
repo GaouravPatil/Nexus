@@ -44,4 +44,15 @@ jobs:
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            /home/ubuntu/Nexus/deploy-nexus.sh
+            echo "Connected to EC2"
+            whoami
+            hostname
+            pwd
+
+            echo "Checking Nexus directory..."
+            ls -la /home/ubuntu/Nexus
+
+            echo "Running deployment..."
+            cd /home/ubuntu/Nexus
+            chmod +x deploy-nexus.sh
+            ./deploy-nexus.sh
