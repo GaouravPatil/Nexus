@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Database, Search, X, AlertTriangle, ChevronUp, ChevronDown, Sparkles, Zap, Wind, Bot, Gem, Layers } from 'lucide-react'
+import { Database, Search, X, AlertTriangle, ChevronUp, ChevronDown, Sparkles, Zap, Wind, Bot, Gem, Layers, RotateCw } from 'lucide-react'
 import './HistoryPanel.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://nexus-fftl.onrender.com'
@@ -41,8 +41,9 @@ export default function HistoryPanel({ onClose }) {
   const [expanded, setExpanded] = useState(null)
   const [search, setSearch] = useState('')
 
-  useEffect(() => {
+  const fetchHistory = () => {
     setLoading(true)
+    setError(null)
     fetch(HISTORY_URL)
       .then(r => {
         if (!r.ok) throw new Error(`Server responded ${r.status}`)
@@ -50,6 +51,10 @@ export default function HistoryPanel({ onClose }) {
       })
       .then(data => { setRecords(data); setLoading(false) })
       .catch(err => { setError(err.message); setLoading(false) })
+  }
+
+  useEffect(() => {
+    fetchHistory()
   }, [])
 
   const filtered = records.filter(r =>
@@ -100,6 +105,9 @@ export default function HistoryPanel({ onClose }) {
               <AlertTriangle size={22} />
               <p>{error}</p>
               <p className="history-state-hint">Make sure the backend server ({API_URL}) is reachable</p>
+              <button className="history-retry-btn" onClick={fetchHistory}>
+                <RotateCw size={14} /> Retry
+              </button>
             </div>
           )}
 

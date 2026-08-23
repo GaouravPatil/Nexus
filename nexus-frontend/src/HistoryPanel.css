@@ -206,6 +206,28 @@
   overflow-y: auto;
 }
 
+.history-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  padding: 0.4rem 0.85rem;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-hover);
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 500;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.history-retry-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 @media (max-width: 600px) {
   .history-panel {
     width: 100vw;
