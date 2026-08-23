@@ -24,7 +24,9 @@ import {
   Wind,
   Bot,
   Gem,
-  Layers
+  Layers,
+  Sun,
+  Moon
 } from 'lucide-react'
 import BlurText from './BlurText'
 import SideRays from './SideRays'
@@ -188,12 +190,12 @@ function ModelSelector({ provider, onProviderChange, disabled }) {
 // Defining it inside App causes it to be re-created on every render, which
 // unmounts the <textarea> element after each keystroke — the root cause of the
 // "only first character typed" bug.
-function Composer({ prompt, onPromptChange, onSubmit, onKeyDown, onProviderChange, provider, loading, switchingModel, isEmpty }) {
+function Composer({ prompt, onPromptChange, onSubmit, onKeyDown, onProviderChange, provider, loading, switchingModel, isEmpty, theme }) {
   return (
     <div className={`composer-glow-wrap${isEmpty ? ' landing-composer-wrap' : ''}`}>
       <BorderGlow
         borderRadius={22}
-        backgroundColor="#131318"
+        backgroundColor={theme === 'light' ? '#FFFFFF' : '#131318'}
         glowColor="20 70 60"
         colors={['#D97757', '#6E8EF0', '#c084fc']}
         glowIntensity={1.4}
@@ -267,6 +269,12 @@ function App() {
   // Auth state
   const [user, setUser] = useState(null)         // Supabase user object or null
   const [authReady, setAuthReady] = useState(false) // false = show auth modal
+  const [theme, setTheme] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('nexus-theme') || 'dark'
+    }
+    return 'dark'
+  })
   const bottomRef = useRef(null)
 
   const currentConv = conversations.find((c) => c.id === currentId) ?? conversations[0]
@@ -312,6 +320,12 @@ function App() {
   useEffect(() => {
     localStorage.setItem('nexus-convs', JSON.stringify(conversations))
   }, [conversations])
+
+  // ── Theme: sync data-theme attribute & persist ──
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('nexus-theme', theme)
+  }, [theme])
 
   useEffect(() => {
     if (!currentId && conversations.length > 0) {
@@ -600,6 +614,7 @@ function App() {
     loading,
     switchingModel,
     isEmpty,
+    theme,
   }
 
   return (
@@ -610,16 +625,16 @@ function App() {
       )}
       <SideRays
         speed={2.2}
-        rayColor1="#D97757"
-        rayColor2="#6E8EF0"
-        intensity={1.6}
+        rayColor1={theme === 'light' ? '#F0A78A' : '#D97757'}
+        rayColor2={theme === 'light' ? '#A3B8F0' : '#6E8EF0'}
+        intensity={theme === 'light' ? 0.8 : 1.6}
         spread={1.8}
         origin="top-right"
         tilt={0}
         saturation={1.3}
         blend={0.7}
         falloff={1.7}
-        opacity={0.9}
+        opacity={theme === 'light' ? 0.35 : 0.9}
         className="page-rays"
       />
 
@@ -728,6 +743,19 @@ function App() {
             <button className="docs-btn" onClick={() => setHistoryOpen(true)} title="History">
               <span className="docs-btn-icon"><Database size={14} /></span>
               <span className="topbar-btn-text">History</span>
+            </button>
+            {/* Theme toggle */}
+            <button
+              className="docs-btn"
+              onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              <span className="docs-btn-icon">
+                {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+              </span>
+              <span className="topbar-btn-text">
+                {theme === 'dark' ? 'Light' : 'Dark'}
+              </span>
             </button>
             <div className="topbar-dropdown-wrap">
               <button className="docs-btn" onClick={(e) => { e.stopPropagation(); setContactOpen((v) => !v); }} title="Contact">
