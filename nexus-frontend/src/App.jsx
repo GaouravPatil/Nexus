@@ -46,7 +46,7 @@ class MarkdownBoundary extends Component {
   }
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const API_URL = import.meta.env.VITE_API_URL || 'https://nexus-fftl.onrender.com'
 
 const STREAM_URL = `${API_URL}/stream`
 const SUMMARIZE_URL = `${API_URL}/summarize`
@@ -583,7 +583,7 @@ function App() {
       if (err.name === 'AbortError') return
       const isNetworkErr = err instanceof TypeError && err.message === 'Failed to fetch'
       const displayMsg = isNetworkErr
-        ? '⚠️ Cannot reach the Nexus backend (localhost:8080). Make sure the Go server is running.'
+        ? `⚠️ Cannot reach the Nexus backend (${API_URL}). Make sure the backend server is running.`
         : err.message
       // Replace the streaming placeholder with an error message
       updateConv(targetId, (c) => ({

@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import { Database, Search, X, AlertTriangle, ChevronUp, ChevronDown, Sparkles, Zap, Wind, Bot, Gem, Layers } from 'lucide-react'
 import './HistoryPanel.css'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const API_URL = import.meta.env.VITE_API_URL || 'https://nexus-fftl.onrender.com'
 
 const HISTORY_URL = `${API_URL}/history`
 
@@ -99,7 +99,7 @@ export default function HistoryPanel({ onClose }) {
             <div className="history-state history-state-error">
               <AlertTriangle size={22} />
               <p>{error}</p>
-              <p className="history-state-hint">Make sure the Go server is running on localhost:8080</p>
+              <p className="history-state-hint">Make sure the backend server ({API_URL}) is reachable</p>
             </div>
           )}
 
