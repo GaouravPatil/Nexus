@@ -26,12 +26,17 @@ import {
   Gem,
   Layers,
   Sun,
-  Moon
+  Moon,
+  Plus,
+  Paperclip,
+  Image,
+  File
 } from 'lucide-react'
 import BlurText from './BlurText'
 import SideRays from './SideRays'
 import BorderGlow from './BorderGlow'
 import AuthModal from './AuthModal.jsx'
+import AuthPage from './AuthPage.jsx'
 import HistoryPanel from './HistoryPanel.jsx'
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 import './App.css'
@@ -190,7 +195,41 @@ function ModelSelector({ provider, onProviderChange, disabled }) {
 // Defining it inside App causes it to be re-created on every render, which
 // unmounts the <textarea> element after each keystroke — the root cause of the
 // "only first character typed" bug.
-function Composer({ prompt, onPromptChange, onSubmit, onKeyDown, onProviderChange, provider, loading, switchingModel, isEmpty, theme }) {
+function Composer({
+  prompt,
+  onPromptChange,
+  onSubmit,
+  onKeyDown,
+  onProviderChange,
+  provider,
+  loading,
+  switchingModel,
+  isEmpty,
+  theme,
+  attachments = [],
+  onAttachFiles,
+  onRemoveAttachment
+}) {
+  const textareaRef = useRef(null)
+  const fileInputRef = useRef(null)
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      const newHeight = Math.min(textareaRef.current.scrollHeight, 200)
+      textareaRef.current.style.height = `${Math.max(newHeight, 36)}px`
+    }
+  }, [prompt])
+
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      if (onAttachFiles) {
+        onAttachFiles(Array.from(e.target.files))
+      }
+      e.target.value = ''
+    }
+  }
+
   return (
     <div className={`composer-glow-wrap${isEmpty ? ' landing-composer-wrap' : ''}`}>
       <BorderGlow
@@ -206,28 +245,77 @@ function Composer({ prompt, onPromptChange, onSubmit, onKeyDown, onProviderChang
         animated={isEmpty}
       >
         <form className="composer" onSubmit={onSubmit}>
-          <textarea
-            value={prompt}
-            onChange={onPromptChange}
-            onKeyDown={onKeyDown}
-            placeholder="Message Nexus…"
-            rows={1}
-            disabled={switchingModel}
-            autoFocus
-          />
-          <div className="composer-actions">
-            <ModelSelector
-              provider={provider}
-              onProviderChange={onProviderChange}
-              disabled={switchingModel}
-            />
+          {attachments.length > 0 && (
+            <div className="composer-attachments-bar">
+              {attachments.map((att) => {
+                const isImg = att.type?.startsWith('image/')
+                return (
+                  <div key={att.id} className="composer-attachment-chip">
+                    {isImg ? (
+                      <Image size={13} className="attachment-icon" />
+                    ) : att.name.endsWith('.pdf') ? (
+                      <FileText size={13} className="attachment-icon pdf" />
+                    ) : (
+                      <Paperclip size={13} className="attachment-icon" />
+                    )}
+                    <span className="attachment-name">{att.name}</span>
+                    <button
+                      type="button"
+                      className="attachment-remove"
+                      onClick={() => onRemoveAttachment && onRemoveAttachment(att.id)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          <div className="composer-inner-row">
             <button
-              type="submit"
-              disabled={loading || switchingModel || !prompt.trim()}
-              aria-label="Send"
+              type="button"
+              className="composer-plus-btn"
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach files, photos, or PDFs"
+              disabled={switchingModel}
             >
-              {loading ? '…' : <Send size={14} style={{ display: 'block', margin: 'auto' }} />}
+              <Plus size={18} />
             </button>
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileChange}
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.txt,.csv,.json,.md"
+              style={{ display: 'none' }}
+            />
+
+            <textarea
+              ref={textareaRef}
+              value={prompt}
+              onChange={onPromptChange}
+              onKeyDown={onKeyDown}
+              placeholder="Message Nexus…"
+              rows={1}
+              disabled={switchingModel}
+              autoFocus
+            />
+
+            <div className="composer-actions">
+              <ModelSelector
+                provider={provider}
+                onProviderChange={onProviderChange}
+                disabled={switchingModel}
+              />
+              <button
+                type="submit"
+                disabled={loading || switchingModel || (!prompt.trim() && attachments.length === 0)}
+                aria-label="Send"
+              >
+                {loading ? '…' : <Send size={14} style={{ display: 'block', margin: 'auto' }} />}
+              </button>
+            </div>
           </div>
         </form>
       </BorderGlow>
@@ -255,10 +343,27 @@ function App() {
     }
   })
   const [prompt, setPrompt] = useState('')
+  const [attachments, setAttachments] = useState([])
   const [provider, setProvider] = useState('auto')
+
+  const handleAttachFiles = (files) => {
+    const newAtts = files.map((file) => ({
+      id: Math.random().toString(36).substring(2, 9),
+      file,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+    }))
+    setAttachments((prev) => [...prev, ...newAtts])
+  }
+
+  const handleRemoveAttachment = (id) => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id))
+  }
   const [loading, setLoading] = useState(false)
   const [switchingModel, setSwitchingModel] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(() => {
     if (typeof window !== 'undefined') {
       return window.innerWidth >= 768
@@ -267,8 +372,26 @@ function App() {
   })
   const [historyOpen, setHistoryOpen] = useState(false)
   // Auth state
-  const [user, setUser] = useState(null)         // Supabase user object or null
-  const [authReady, setAuthReady] = useState(false) // false = show auth modal
+  const [session, setSession] = useState(null)
+  const [user, setUser] = useState(null)
+  const [isGuest, setIsGuest] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('nexus-guest-mode') === 'true'
+    }
+    return false
+  })
+
+  // Close dropdowns on outside click
+  useEffect(() => {
+    if (!contactOpen && !profileOpen) return
+    const close = () => {
+      setContactOpen(false)
+      setProfileOpen(false)
+    }
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [contactOpen, profileOpen])
+  const [authReady, setAuthReady] = useState(false)
   const [theme, setTheme] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('nexus-theme') || 'dark'
@@ -301,6 +424,7 @@ function App() {
     }
     supabase.auth.getSession()
       .then(({ data }) => {
+        setSession(data?.session ?? null)
         setUser(data?.session?.user ?? null)
       })
       .catch((err) => {
@@ -311,7 +435,12 @@ function App() {
       })
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session ?? null)
       setUser(session?.user ?? null)
+      if (session) {
+        setIsGuest(false)
+        localStorage.removeItem('nexus-guest-mode')
+      }
     })
     return () => listener?.subscription?.unsubscribe()
   }, [])
@@ -414,9 +543,13 @@ function App() {
     }))
 
     try {
+      const headers = { 'Content-Type': 'application/json' }
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
       const res = await fetch(SUMMARIZE_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           history: conv.history ?? [],
           from_provider: currentProvider,
@@ -477,8 +610,14 @@ function App() {
   // ─── Submit handler (SSE streaming) ─────────────────────────────────────
   async function handleSubmit(e) {
     e.preventDefault()
-    const text = prompt.trim()
-    if (!text || loading || switchingModel) return
+    const rawText = prompt.trim()
+    if ((!rawText && attachments.length === 0) || loading || switchingModel) return
+
+    let text = rawText
+    if (attachments.length > 0) {
+      const attachNotice = attachments.map((a) => `📎 [Attached File: ${a.name}]`).join('\n')
+      text = rawText ? `${attachNotice}\n\n${rawText}` : attachNotice
+    }
 
     const targetId = currentConv?.id ?? currentId
     const convSnapshot = conversations.find((c) => c.id === targetId) ?? currentConv
@@ -493,6 +632,7 @@ function App() {
       history: [...(c.history ?? []), { role: 'user', content: text }],
     }))
     setPrompt('')
+    setAttachments([])
     setLoading(true)
 
     const historyToSend = [...currentHistory, { role: 'user', content: text }]
@@ -506,9 +646,13 @@ function App() {
 
     try {
       const controller = new AbortController()
+      const headers = { 'Content-Type': 'application/json' }
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
       const res = await fetch(STREAM_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ history: historyToSend, provider }),
         signal: controller.signal,
       })
@@ -547,6 +691,13 @@ function App() {
                 ...c,
                 messages: c.messages.map((m) =>
                   m._id === streamingMsgId ? { ...m, provider: activeProvider } : m
+                ),
+              }))
+            } else if (currentEvent === 'memory_rag') {
+              updateConv(targetId, (c) => ({
+                ...c,
+                messages: c.messages.map((m) =>
+                  m._id === streamingMsgId ? { ...m, memoryAugmented: true } : m
                 ),
               }))
             } else if (currentEvent === 'raw_answers') {
@@ -615,14 +766,32 @@ function App() {
     switchingModel,
     isEmpty,
     theme,
+    attachments,
+    onAttachFiles: handleAttachFiles,
+    onRemoveAttachment: handleRemoveAttachment,
+  }
+
+  if (authReady && !session && !isGuest) {
+    return (
+      <AuthPage
+        theme={theme}
+        onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+        onAuthSuccess={(u, s) => {
+          setUser(u)
+          setSession(s)
+          setIsGuest(false)
+          localStorage.removeItem('nexus-guest-mode')
+        }}
+        onGuestMode={() => {
+          setIsGuest(true)
+          localStorage.setItem('nexus-guest-mode', 'true')
+        }}
+      />
+    )
   }
 
   return (
     <div className="page">
-      {/* Show auth modal until the user is resolved */}
-      {!authReady && (
-        <AuthModal onAuth={(u) => { setUser(u); setAuthReady(true) }} />
-      )}
       <SideRays
         speed={2.2}
         rayColor1={theme === 'light' ? '#F0A78A' : '#D97757'}
@@ -714,37 +883,13 @@ function App() {
             <Menu size={18} />
           </button>
           <div className="topbar-actions">
-            {/* User badge / sign-out */}
-            {user ? (
-              <div className="topbar-user">
-                <span className="topbar-user-badge" title={user.email}>
-                  <span className="topbar-user-icon"><User size={13} /></span>
-                  <span className="topbar-user-email">{user.email}</span>
-                </span>
-                <button
-                  className="signout-btn"
-                  title="Sign out"
-                  onClick={async () => {
-                    await supabase.auth.signOut()
-                    setUser(null)
-                  }}
-                >
-                  <LogOut size={13} />
-                  <span className="topbar-btn-text">Sign out</span>
-                </button>
-              </div>
-            ) : (
-              <button className="docs-btn" onClick={() => setAuthReady(false)} title="Sign in">
-                <span className="docs-btn-icon"><User size={14} /></span>
-                <span className="topbar-btn-text">Sign in</span>
-              </button>
-            )}
-            {/* Cloud history panel */}
+            {/* 1. Cloud history panel */}
             <button className="docs-btn" onClick={() => setHistoryOpen(true)} title="History">
               <span className="docs-btn-icon"><Database size={14} /></span>
               <span className="topbar-btn-text">History</span>
             </button>
-            {/* Theme toggle */}
+
+            {/* 2. Theme toggle */}
             <button
               className="docs-btn"
               onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
@@ -757,6 +902,8 @@ function App() {
                 {theme === 'dark' ? 'Light' : 'Dark'}
               </span>
             </button>
+
+            {/* 3. Contact dropdown */}
             <div className="topbar-dropdown-wrap">
               <button className="docs-btn" onClick={(e) => { e.stopPropagation(); setContactOpen((v) => !v); }} title="Contact">
                 <span className="docs-btn-icon"><Mail size={14} /></span>
@@ -786,6 +933,8 @@ function App() {
                 </div>
               )}
             </div>
+
+            {/* 4. Docs link */}
             <a
               href="https://github.com/GaouravPatil/Nexus#readme"
               target="_blank"
@@ -796,6 +945,60 @@ function App() {
               <span className="docs-btn-icon"><BookOpen size={14} /></span>
               <span className="topbar-btn-text">Docs</span>
             </a>
+
+            {/* 5. Circular Profile Avatar / Guest Mode - Placed AFTER Docs */}
+            {user ? (
+              <div className="topbar-dropdown-wrap">
+                <button
+                  className="profile-avatar-btn"
+                  onClick={(e) => { e.stopPropagation(); setProfileOpen((v) => !v); }}
+                  title={user.email}
+                >
+                  <span className="profile-initial">
+                    {user.email ? user.email.charAt(0).toUpperCase() : <User size={14} />}
+                  </span>
+                </button>
+                {profileOpen && (
+                  <div className="topbar-dropdown profile-dropdown" onClick={(e) => e.stopPropagation()}>
+                    <div className="profile-dropdown-header">
+                      <span className="profile-dropdown-avatar">
+                        {user.email ? user.email.charAt(0).toUpperCase() : <User size={14} />}
+                      </span>
+                      <div className="profile-dropdown-info">
+                        <p className="profile-dropdown-email">{user.email}</p>
+                        <span className="profile-dropdown-badge">Authenticated</span>
+                      </div>
+                    </div>
+                    <div className="profile-dropdown-divider" />
+                    <button
+                      className="profile-dropdown-signout"
+                      onClick={async () => {
+                        await supabase.auth.signOut()
+                        setSession(null)
+                        setUser(null)
+                        setIsGuest(false)
+                        localStorage.removeItem('nexus-guest-mode')
+                        setProfileOpen(false)
+                      }}
+                    >
+                      <LogOut size={14} />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                className="profile-avatar-btn guest"
+                title="Guest Mode — Click to Sign in"
+                onClick={() => {
+                  setIsGuest(false)
+                  localStorage.removeItem('nexus-guest-mode')
+                }}
+              >
+                <User size={14} />
+              </button>
+            )}
           </div>
         </header>
 
@@ -871,7 +1074,12 @@ function App() {
                               color: PROVIDER_COLORS[m.provider] ?? 'var(--ink-soft)',
                             }}
                           >
-                            {m.provider}
+                            <span>{m.provider}</span>
+                            {m.memoryAugmented && (
+                              <span className="rag-badge" title="Retrieved semantic memory context via Vector Search">
+                                <Brain size={11} /> RAG Memory
+                              </span>
+                            )}
                           </div>
                         )}
                         <div className="bubble">
@@ -932,7 +1140,7 @@ function App() {
       </div>
 
       {/* ── History Panel ── */}
-      {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} />}
+      {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} session={session} />}
     </div>
   )
 }

@@ -1,11 +1,28 @@
 import { useState, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Database, Search, X, AlertTriangle, ChevronUp, ChevronDown, Sparkles, Zap, Wind, Bot, Gem, Layers, RotateCw } from 'lucide-react'
+import {
+  Database,
+  Search,
+  X,
+  AlertTriangle,
+  ChevronUp,
+  ChevronDown,
+  Sparkles,
+  Zap,
+  Wind,
+  Bot,
+  Gem,
+  Layers,
+  RotateCw,
+  Brain,
+  Trash2
+} from 'lucide-react'
 import './HistoryPanel.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://nexus-fftl.onrender.com'
 
 const HISTORY_URL = `${API_URL}/history`
+const MEMORIES_URL = `${API_URL}/memories`
 
 const PROVIDER_COLORS = {
   groq: '#D97757',
@@ -34,17 +51,28 @@ function timeAgo(isoStr) {
   return `${Math.floor(hrs / 24)}d ago`
 }
 
-export default function HistoryPanel({ onClose }) {
+export default function HistoryPanel({ onClose, session }) {
+  const [activeTab, setActiveTab] = useState('queries') // 'queries' | 'memories'
   const [records, setRecords] = useState([])
+  const [memories, setMemories] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [expanded, setExpanded] = useState(null)
   const [search, setSearch] = useState('')
+  const [clearing, setClearing] = useState(false)
+
+  const getHeaders = () => {
+    const headers = {}
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`
+    }
+    return headers
+  }
 
   const fetchHistory = () => {
     setLoading(true)
     setError(null)
-    fetch(HISTORY_URL)
+    fetch(HISTORY_URL, { headers: getHeaders() })
       .then(r => {
         if (!r.ok) throw new Error(`Server responded ${r.status}`)
         return r.json()
@@ -53,14 +81,43 @@ export default function HistoryPanel({ onClose }) {
       .catch(err => { setError(err.message); setLoading(false) })
   }
 
-  useEffect(() => {
-    fetchHistory()
-  }, [])
+  const fetchMemories = () => {
+    setLoading(true)
+    setError(null)
+    fetch(MEMORIES_URL, { headers: getHeaders() })
+      .then(r => {
+        if (!r.ok) throw new Error(`Server responded ${r.status}`)
+        return r.json()
+      })
+      .then(data => { setMemories(data); setLoading(false) })
+      .catch(err => { setError(err.message); setLoading(false) })
+  }
 
-  const filtered = records.filter(r =>
+  const clearMemories = () => {
+    if (!confirm('Are you sure you want to clear all semantic RAG memories for your user account?')) return
+    setClearing(true)
+    fetch(MEMORIES_URL, { method: 'DELETE', headers: getHeaders() })
+      .then(r => r.json())
+      .then(() => { setMemories([]); setClearing(false) })
+      .catch(err => { alert('Failed to clear memories: ' + err.message); setClearing(false) })
+  }
+
+  useEffect(() => {
+    if (activeTab === 'queries') {
+      fetchHistory()
+    } else {
+      fetchMemories()
+    }
+  }, [activeTab, session])
+
+  const filteredRecords = records.filter(r =>
     !search ||
     r.prompt.toLowerCase().includes(search.toLowerCase()) ||
     r.answer.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const filteredMemories = memories.filter(m =>
+    !search || m.content.toLowerCase().includes(search.toLowerCase())
   )
 
   return (
@@ -70,24 +127,56 @@ export default function HistoryPanel({ onClose }) {
         <div className="history-header">
           <div className="history-title-row">
             <Database size={18} className="history-icon" />
-            <h2 className="history-title">Cloud History</h2>
-            <span className="history-count">{records.length} queries</span>
+            <h2 className="history-title">Data & Memory Hub</h2>
           </div>
           <button className="history-close" onClick={onClose}><X size={16} /></button>
         </div>
 
-        {/* Search */}
+        {/* Tab Switcher */}
+        <div className="history-tabs-bar">
+          <button
+            type="button"
+            className={`history-tab-btn ${activeTab === 'queries' ? 'active' : ''}`}
+            onClick={() => { setActiveTab('queries'); setExpanded(null); setSearch('') }}
+          >
+            <Database size={14} />
+            <span>Cloud History ({records.length})</span>
+          </button>
+
+          <button
+            type="button"
+            className={`history-tab-btn ${activeTab === 'memories' ? 'active' : ''}`}
+            onClick={() => { setActiveTab('memories'); setExpanded(null); setSearch('') }}
+          >
+            <Brain size={14} />
+            <span>RAG Vector Memories ({memories.length})</span>
+          </button>
+        </div>
+
+        {/* Search & Actions Bar */}
         <div className="history-search-wrap">
           <Search size={15} className="history-search-icon" />
           <input
             className="history-search"
-            placeholder="Search prompts and answers…"
+            placeholder={activeTab === 'queries' ? "Search prompts & answers…" : "Search vector embeddings & context…"}
             value={search}
             onChange={e => setSearch(e.target.value)}
             autoFocus
           />
           {search && (
             <button className="history-search-clear" onClick={() => setSearch('')}><X size={14} /></button>
+          )}
+
+          {activeTab === 'memories' && memories.length > 0 && (
+            <button
+              className="history-clear-memories-btn"
+              onClick={clearMemories}
+              disabled={clearing}
+              title="Clear stored vector memories"
+            >
+              <Trash2 size={13} />
+              <span>Clear</span>
+            </button>
           )}
         </div>
 
@@ -96,7 +185,7 @@ export default function HistoryPanel({ onClose }) {
           {loading && (
             <div className="history-state">
               <div className="history-spinner" />
-              <p>Loading from database…</p>
+              <p>Loading {activeTab === 'queries' ? 'queries' : 'vector memories'} from database…</p>
             </div>
           )}
 
@@ -105,20 +194,21 @@ export default function HistoryPanel({ onClose }) {
               <AlertTriangle size={22} />
               <p>{error}</p>
               <p className="history-state-hint">Make sure the backend server ({API_URL}) is reachable</p>
-              <button className="history-retry-btn" onClick={fetchHistory}>
+              <button className="history-retry-btn" onClick={activeTab === 'queries' ? fetchHistory : fetchMemories}>
                 <RotateCw size={14} /> Retry
               </button>
             </div>
           )}
 
-          {!loading && !error && filtered.length === 0 && (
+          {/* QUERIES TAB */}
+          {!loading && !error && activeTab === 'queries' && filteredRecords.length === 0 && (
             <div className="history-state">
               <Search size={28} style={{ opacity: 0.6 }} />
               <p>{search ? 'No results for that search.' : 'No queries saved yet.'}</p>
             </div>
           )}
 
-          {!loading && !error && filtered.map(record => {
+          {!loading && !error && activeTab === 'queries' && filteredRecords.map(record => {
             const ProviderIcon = MODEL_ICONS[record.provider] ?? Sparkles
             return (
               <div
@@ -160,6 +250,48 @@ export default function HistoryPanel({ onClose }) {
               </div>
             )
           })}
+
+          {/* MEMORIES TAB */}
+          {!loading && !error && activeTab === 'memories' && filteredMemories.length === 0 && (
+            <div className="history-state">
+              <Brain size={32} style={{ opacity: 0.5, color: '#c084fc' }} />
+              <p>{search ? 'No matching memories found.' : 'No vector memories stored yet.'}</p>
+              <p className="history-state-hint">As you chat with Nexus, prompts and key answers are automatically converted into 1536-dim embeddings for semantic retrieval (RAG).</p>
+            </div>
+          )}
+
+          {!loading && !error && activeTab === 'memories' && filteredMemories.map(mem => (
+            <div
+              key={mem.id}
+              className={`history-item memory-item ${expanded === mem.id ? 'expanded' : ''}`}
+              onClick={() => setExpanded(expanded === mem.id ? null : mem.id)}
+            >
+              <div className="history-item-header">
+                <Brain size={14} style={{ color: '#c084fc', flexShrink: 0 }} />
+                <p className="history-prompt">{mem.content.slice(0, 90)}…</p>
+                <span className="history-time">{timeAgo(mem.created_at)}</span>
+                <span className="history-chevron">
+                  {expanded === mem.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </span>
+              </div>
+
+              {expanded === mem.id && (
+                <div className="history-answer">
+                  <div className="history-answer-label">
+                    <span className="history-answer-provider" style={{ color: '#c084fc' }}>
+                      1536d Vector Embedding (pgvector / SQLite)
+                    </span>
+                    <span className="history-answer-date">
+                      {new Date(mem.created_at).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="history-answer-text">
+                    <ReactMarkdown>{mem.content}</ReactMarkdown>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
     </div>

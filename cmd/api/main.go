@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,446 @@ import (
 	"github.com/joho/godotenv"
 	_ "modernc.org/sqlite"
 )
+
+// ================= Auth & Context Middleware =================
+
+type contextKey string
+
+const userIDKey contextKey = "user_id"
+
+func parseJWTUserID(tokenStr string) (string, error) {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) < 2 {
+		return "", errors.New("invalid jwt format")
+	}
+	payloadSegment := parts[1]
+	if l := len(payloadSegment) % 4; l > 0 {
+		payloadSegment += strings.Repeat("=", 4-l)
+	}
+	decoded, err := base64.URLEncoding.DecodeString(payloadSegment)
+	if err != nil {
+		decoded, err = base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return "", err
+		}
+	}
+	var claims struct {
+		Sub   string `json:"sub"`
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return "", err
+	}
+	if claims.Sub != "" {
+		return claims.Sub, nil
+	}
+	if claims.Email != "" {
+		return claims.Email, nil
+	}
+	return "", errors.New("no sub or email claim found")
+}
+
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID := "guest"
+		authHeader := r.Header.Get("Authorization")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if token != "" {
+				if id, err := parseJWTUserID(token); err == nil && id != "" {
+					userID = id
+				}
+			}
+		}
+		ctx := context.WithValue(r.Context(), userIDKey, userID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
+
+func getUserIDFromContext(ctx context.Context) string {
+	if val, ok := ctx.Value(userIDKey).(string); ok && val != "" {
+		return val
+	}
+	return "guest"
+}
+
+// ================= Embedding & Memory Engine (Phase 2 MaaS) =================
+
+func generateEmbedding(ctx context.Context, text string) ([]float32, error) {
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	if openAIKey != "" {
+		vec, err := generateOpenAIEmbedding(ctx, openAIKey, text)
+		if err == nil && len(vec) > 0 {
+			return vec, nil
+		}
+		log.Println("warning: OpenAI embedding failed, attempting fallback:", err)
+	}
+
+	geminiKey := os.Getenv("GEMINI_API_KEY")
+	if geminiKey != "" {
+		vec, err := generateGeminiEmbedding(ctx, geminiKey, text)
+		if err == nil && len(vec) > 0 {
+			return vec, nil
+		}
+		log.Println("warning: Gemini embedding failed, attempting fallback:", err)
+	}
+
+	return generateDeterministicEmbedding(text, 1536), nil
+}
+
+func generateOpenAIEmbedding(ctx context.Context, apiKey, text string) ([]float32, error) {
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"input":      text,
+		"model":      "text-embedding-3-small",
+		"dimensions": 1536,
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/embeddings", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openai embedding status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var res struct {
+		Data []struct {
+			Embedding []float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	if len(res.Data) == 0 {
+		return nil, errors.New("no embedding returned from openai")
+	}
+	return res.Data[0].Embedding, nil
+}
+
+func generateGeminiEmbedding(ctx context.Context, apiKey, text string) ([]float32, error) {
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=%s", apiKey)
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model": "models/text-embedding-004",
+		"content": map[string]interface{}{
+			"parts": []map[string]string{{"text": text}},
+		},
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("gemini embedding status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var res struct {
+		Embedding struct {
+			Values []float32 `json:"values"`
+		} `json:"embedding"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	values := res.Embedding.Values
+	if len(values) == 0 {
+		return nil, errors.New("no embedding values returned from gemini")
+	}
+	if len(values) < 1536 {
+		padded := make([]float32, 1536)
+		copy(padded, values)
+		return padded, nil
+	}
+	return values[:1536], nil
+}
+
+func generateDeterministicEmbedding(text string, dims int) []float32 {
+	vec := make([]float32, dims)
+	words := strings.Fields(strings.ToLower(text))
+	for _, w := range words {
+		var h uint32 = 2166136261
+		for i := 0; i < len(w); i++ {
+			h ^= uint32(w[i])
+			h *= 16777619
+		}
+		idx := int(h % uint32(dims))
+		sign := float32(1.0)
+		if (h & 1) == 1 {
+			sign = -1.0
+		}
+		vec[idx] += sign
+	}
+	var sumSq float64
+	for _, v := range vec {
+		sumSq += float64(v * v)
+	}
+	if sumSq > 0 {
+		norm := float32(math.Sqrt(sumSq))
+		for i := range vec {
+			vec[i] /= norm
+		}
+	}
+	return vec
+}
+
+func cosineSimilarity(a, b []float32) float32 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := 0; i < len(a); i++ {
+		dot += float64(a[i] * b[i])
+		normA += float64(a[i] * a[i])
+		normB += float64(b[i] * b[i])
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return float32(dot / (math.Sqrt(normA) * math.Sqrt(normB)))
+}
+
+func formatVectorForSQL(vec []float32) string {
+	var sb strings.Builder
+	sb.WriteString("[")
+	for i, v := range vec {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(fmt.Sprintf("%f", v))
+	}
+	sb.WriteString("]")
+	return sb.String()
+}
+
+func saveMemory(userID, prompt, answer string) {
+	if activeDB == nil || prompt == "" || answer == "" {
+		return
+	}
+	content := fmt.Sprintf("User: %s\nAssistant: %s", prompt, answer)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	emb, err := generateEmbedding(ctx, content)
+	if err != nil {
+		log.Println("saveMemory embedding error:", err)
+		return
+	}
+
+	if activeDB.driver == "postgres" {
+		vecStr := formatVectorForSQL(emb)
+		_, err = activeDB.pgPool.Exec(ctx,
+			"INSERT INTO conversation_memories (user_id, content, embedding) VALUES ($1, $2, $3::vector)",
+			userID, content, vecStr,
+		)
+	} else if activeDB.driver == "sqlite" {
+		embJSON, _ := json.Marshal(emb)
+		_, err = activeDB.sqlDB.Exec(
+			"INSERT INTO conversation_memories (user_id, content, embedding) VALUES (?, ?, ?)",
+			userID, content, string(embJSON),
+		)
+	}
+	if err != nil {
+		log.Println("saveMemory DB insert error:", err)
+	}
+}
+
+func retrieveRelevantMemories(ctx context.Context, userID, prompt string, topK int) ([]string, error) {
+	if activeDB == nil || prompt == "" {
+		return nil, nil
+	}
+	emb, err := generateEmbedding(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+
+	var results []string
+	if activeDB.driver == "postgres" {
+		vecStr := formatVectorForSQL(emb)
+		rows, err := activeDB.pgPool.Query(ctx,
+			"SELECT content FROM conversation_memories WHERE user_id = $1 ORDER BY embedding <=> $2::vector LIMIT $3",
+			userID, vecStr, topK,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var content string
+			if err := rows.Scan(&content); err == nil {
+				results = append(results, content)
+			}
+		}
+	} else if activeDB.driver == "sqlite" {
+		rows, err := activeDB.sqlDB.Query(
+			"SELECT content, embedding FROM conversation_memories WHERE user_id = ? ORDER BY id DESC LIMIT 200",
+			userID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		type scoredMemory struct {
+			content string
+			score   float32
+		}
+		var scored []scoredMemory
+
+		for rows.Next() {
+			var content, embStr string
+			if err := rows.Scan(&content, &embStr); err != nil {
+				continue
+			}
+			var memEmb []float32
+			if err := json.Unmarshal([]byte(embStr), &memEmb); err != nil {
+				continue
+			}
+			score := cosineSimilarity(emb, memEmb)
+			if score > 0.15 {
+				scored = append(scored, scoredMemory{content: content, score: score})
+			}
+		}
+
+		for i := 0; i < len(scored)-1; i++ {
+			for j := i + 1; j < len(scored); j++ {
+				if scored[j].score > scored[i].score {
+					scored[i], scored[j] = scored[j], scored[i]
+				}
+			}
+		}
+
+		for i := 0; i < len(scored) && i < topK; i++ {
+			results = append(results, scored[i].content)
+		}
+	}
+
+	return results, nil
+}
+
+func injectMemoryRAGContext(ctx context.Context, userID, lastPrompt string, history []message) ([]message, bool) {
+	if lastPrompt == "" {
+		return history, false
+	}
+	memories, err := retrieveRelevantMemories(ctx, userID, lastPrompt, 3)
+	if err != nil || len(memories) == 0 {
+		return history, false
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Below is relevant past conversation memory retrieved for this user via Semantic Vector Search (RAG):\n")
+	for i, mem := range memories {
+		sb.WriteString(fmt.Sprintf("[%d] %s\n", i+1, mem))
+	}
+	sb.WriteString("\nUse this background memory to maintain context if relevant. Do not explicitly cite internal memory IDs unless requested.")
+
+	memorySysMsg := message{
+		Role:    "system",
+		Content: sb.String(),
+	}
+
+	var newHistory []message
+	hasSystem := false
+	for _, m := range history {
+		if m.Role == "system" && !hasSystem {
+			newHistory = append(newHistory, message{
+				Role:    "system",
+				Content: m.Content + "\n\n" + sb.String(),
+			})
+			hasSystem = true
+		} else {
+			newHistory = append(newHistory, m)
+		}
+	}
+	if !hasSystem {
+		newHistory = append([]message{memorySysMsg}, history...)
+	}
+
+	return newHistory, true
+}
+
+type memoryRecord struct {
+	ID        int    `json:"id"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at"`
+}
+
+func handleMemories(w http.ResponseWriter, r *http.Request) {
+	if activeDB == nil {
+		http.Error(w, "database not connected", http.StatusServiceUnavailable)
+		return
+	}
+	userID := getUserIDFromContext(r.Context())
+
+	switch r.Method {
+	case http.MethodGet:
+		var records []memoryRecord
+		if activeDB.driver == "postgres" {
+			rows, err := activeDB.pgPool.Query(context.Background(),
+				"SELECT id, content, created_at::text FROM conversation_memories WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50",
+				userID,
+			)
+			if err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var rec memoryRecord
+					if err := rows.Scan(&rec.ID, &rec.Content, &rec.CreatedAt); err == nil {
+						records = append(records, rec)
+					}
+				}
+			}
+		} else if activeDB.driver == "sqlite" {
+			rows, err := activeDB.sqlDB.Query(
+				"SELECT id, content, datetime(created_at) FROM conversation_memories WHERE user_id = ? ORDER BY id DESC LIMIT 50",
+				userID,
+			)
+			if err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var rec memoryRecord
+					if err := rows.Scan(&rec.ID, &rec.Content, &rec.CreatedAt); err == nil {
+						records = append(records, rec)
+					}
+				}
+			}
+		}
+		if records == nil {
+			records = []memoryRecord{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(records)
+
+	case http.MethodDelete:
+		if activeDB.driver == "postgres" {
+			_, _ = activeDB.pgPool.Exec(context.Background(), "DELETE FROM conversation_memories WHERE user_id = $1", userID)
+		} else if activeDB.driver == "sqlite" {
+			_, _ = activeDB.sqlDB.Exec("DELETE FROM conversation_memories WHERE user_id = ?", userID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "memories cleared"})
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
 
 // ================= Provider Metrics (Smart Router) =================
 
@@ -539,13 +980,25 @@ func connectDB() error {
 			if err := pool.Ping(ctx); err == nil {
 				log.Println("connected to Supabase PostgreSQL")
 				_, _ = pool.Exec(context.Background(), `
+					CREATE EXTENSION IF NOT EXISTS vector;
 					CREATE TABLE IF NOT EXISTS queries (
 						id BIGSERIAL PRIMARY KEY,
+						user_id TEXT DEFAULT 'guest',
 						prompt TEXT NOT NULL,
 						provider TEXT NOT NULL,
 						answer TEXT NOT NULL,
 						created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 					);
+					ALTER TABLE queries ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT 'guest';
+					CREATE TABLE IF NOT EXISTS conversation_memories (
+						id BIGSERIAL PRIMARY KEY,
+						user_id TEXT NOT NULL,
+						content TEXT NOT NULL,
+						embedding vector(1536),
+						metadata JSONB DEFAULT '{}'::jsonb,
+						created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+					);
+					CREATE INDEX IF NOT EXISTS conversation_memories_user_idx ON conversation_memories (user_id);
 				`)
 				activeDB = &DBBackend{driver: "postgres", pgPool: pool}
 				return nil
@@ -567,9 +1020,18 @@ func connectDB() error {
 	_, err = sdb.Exec(`
 		CREATE TABLE IF NOT EXISTS queries (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id TEXT DEFAULT 'guest',
 			prompt TEXT NOT NULL,
 			provider TEXT NOT NULL,
 			answer TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS conversation_memories (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id TEXT NOT NULL,
+			content TEXT NOT NULL,
+			embedding TEXT NOT NULL,
+			metadata TEXT DEFAULT '{}',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 	`)
@@ -577,30 +1039,39 @@ func connectDB() error {
 		return fmt.Errorf("failed to create sqlite schema: %w", err)
 	}
 
+	// Gracefully add column to sqlite if existing table doesn't have user_id
+	_, _ = sdb.Exec(`ALTER TABLE queries ADD COLUMN user_id TEXT DEFAULT 'guest';`)
+
 	activeDB = &DBBackend{driver: "sqlite", sqlDB: sdb}
 	log.Println("connected to local SQLite database (nexus.db)")
 	return nil
 }
 
-func saveQuery(prompt, provider, answer string) {
+func saveQuery(userID, prompt, provider, answer string) {
 	if activeDB == nil {
 		return
+	}
+	if userID == "" {
+		userID = "guest"
 	}
 	var err error
 	if activeDB.driver == "postgres" {
 		_, err = activeDB.pgPool.Exec(context.Background(),
-			"INSERT INTO queries (prompt, provider, answer) VALUES ($1, $2, $3)",
-			prompt, provider, answer,
+			"INSERT INTO queries (user_id, prompt, provider, answer) VALUES ($1, $2, $3, $4)",
+			userID, prompt, provider, answer,
 		)
 	} else if activeDB.driver == "sqlite" {
 		_, err = activeDB.sqlDB.Exec(
-			"INSERT INTO queries (prompt, provider, answer) VALUES (?, ?, ?)",
-			prompt, provider, answer,
+			"INSERT INTO queries (user_id, prompt, provider, answer) VALUES (?, ?, ?, ?)",
+			userID, prompt, provider, answer,
 		)
 	}
 	if err != nil {
 		log.Println("saveQuery error:", err)
 	}
+
+	// Save vector embedding memory asynchronously for RAG semantic search
+	go saveMemory(userID, prompt, answer)
 }
 
 // ================= /query request/response shape =================
@@ -720,6 +1191,9 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	userID := getUserIDFromContext(r.Context())
+	history, _ = injectMemoryRAGContext(r.Context(), userID, lastPrompt, history)
+
 	provider := req.Provider
 	if provider == "" || provider == "auto" {
 		provider = selectProvider(lastPrompt)
@@ -747,7 +1221,8 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to get response from %s: %v", provider, err), http.StatusInternalServerError)
 		return
 	}
-	saveQuery(lastPrompt, provider, answer)
+	userID = getUserIDFromContext(r.Context())
+	saveQuery(userID, lastPrompt, provider, answer)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(queryResponse{Provider: provider, Answer: answer, RawAnswers: rawAnswers})
 }
@@ -807,7 +1282,12 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		provider = selectProvider(lastPrompt)
 	}
 
-	// Send provider name as first event so the UI can tag the message immediately
+	userID := getUserIDFromContext(r.Context())
+	history, ragInjected := injectMemoryRAGContext(r.Context(), userID, lastPrompt, req.History)
+	if ragInjected {
+		fmt.Fprintf(w, "event: memory_rag\ndata: {\"status\":\"active\"}\n\n")
+		flusher.Flush()
+	}
 	providerJSON, _ := json.Marshal(provider)
 	fmt.Fprintf(w, "event: provider\ndata: %s\n\n", providerJSON)
 	flusher.Flush()
@@ -832,7 +1312,8 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: raw_answers\ndata: %s\n\n", rawJSON)
 		flusher.Flush()
 
-		saveQuery(lastPrompt, provider, answer)
+		userID := getUserIDFromContext(ctx)
+		saveQuery(userID, lastPrompt, provider, answer)
 		fmt.Fprintf(w, "event: done\ndata: {}\n\n")
 		flusher.Flush()
 		return
@@ -875,7 +1356,8 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		case token, open := <-tokenCh:
 			if !open {
 				// Channel closed — streaming complete
-				saveQuery(lastPrompt, provider, fullAnswer.String())
+				userID := getUserIDFromContext(ctx)
+				saveQuery(userID, lastPrompt, provider, fullAnswer.String())
 				fmt.Fprintf(w, "event: done\ndata: {}\n\n")
 				flusher.Flush()
 				return
@@ -912,10 +1394,12 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database not connected", http.StatusServiceUnavailable)
 		return
 	}
+	userID := getUserIDFromContext(r.Context())
 	var records []historyRecord
 	if activeDB.driver == "postgres" {
 		rows, err := activeDB.pgPool.Query(context.Background(),
-			"SELECT id, prompt, provider, answer, created_at::text FROM queries ORDER BY created_at DESC LIMIT 100",
+			"SELECT id, prompt, provider, answer, created_at::text FROM queries WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100",
+			userID,
 		)
 		if err != nil {
 			log.Println("handleHistory query error:", err)
@@ -933,7 +1417,8 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if activeDB.driver == "sqlite" {
 		rows, err := activeDB.sqlDB.Query(
-			"SELECT id, prompt, provider, answer, datetime(created_at) FROM queries ORDER BY created_at DESC LIMIT 100",
+			"SELECT id, prompt, provider, answer, datetime(created_at) FROM queries WHERE user_id = ? ORDER BY created_at DESC LIMIT 100",
+			userID,
 		)
 		if err != nil {
 			log.Println("handleHistory sqlite query error:", err)
@@ -998,10 +1483,11 @@ func main() {
 			"database": dbDriver,
 		})
 	}))
-	mux.HandleFunc("/query", enableCORS(handleQuery))
-	mux.HandleFunc("/stream", enableCORS(handleStream))
-	mux.HandleFunc("/history", enableCORS(handleHistory))
-	mux.HandleFunc("/summarize", enableCORS(handleSummarize))
+	mux.HandleFunc("/query", enableCORS(authMiddleware(handleQuery)))
+	mux.HandleFunc("/stream", enableCORS(authMiddleware(handleStream)))
+	mux.HandleFunc("/history", enableCORS(authMiddleware(handleHistory)))
+	mux.HandleFunc("/summarize", enableCORS(authMiddleware(handleSummarize)))
+	mux.HandleFunc("/memories", enableCORS(authMiddleware(handleMemories)))
 	// /metrics — live provider latency, cost, and routing scores
 	mux.HandleFunc("/metrics", enableCORS(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

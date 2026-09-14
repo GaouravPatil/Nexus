@@ -25,10 +25,20 @@ export default function AuthModal({ onAuth }) {
         if (error) throw error
         onAuth(data.user)
       } else {
-        const { error } = await supabase.auth.signUp({ email, password })
+        const { data, error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
-        setInfo('Check your email for a confirmation link, then log in.')
-        setTab('login')
+
+        if (data?.session) {
+          onAuth(data.user)
+        } else if (data?.user) {
+          const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email, password })
+          if (!signInErr && signInData?.session) {
+            onAuth(signInData.user)
+          } else {
+            setInfo('Account created successfully in Supabase! Check your email for a confirmation link, then log in.')
+            setTab('login')
+          }
+        }
       }
     } catch (err) {
       setError(err.message)

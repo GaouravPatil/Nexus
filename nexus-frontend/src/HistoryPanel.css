@@ -79,6 +79,62 @@
   color: var(--ink);
 }
 
+.history-tabs-bar {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0 1.4rem;
+  margin-top: 0.75rem;
+  border-bottom: 1px solid var(--sidebar-border-dim, rgba(255, 255, 255, 0.08));
+}
+
+.history-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.85rem;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft, #a1a1aa);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.history-tab-btn:hover {
+  color: var(--ink, #ffffff);
+}
+
+.history-tab-btn.active {
+  color: var(--ink, #ffffff);
+  border-bottom-color: #c084fc;
+}
+
+.history-clear-memories-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fca5a5;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.history-clear-memories-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.history-clear-memories-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .history-search-wrap {
   display: flex;
   align-items: center;
@@ -86,7 +142,7 @@
   padding: 0.65rem 1rem;
   background: var(--surface-subtle);
   border: 1px solid var(--border);
-  margin: 1rem 1.4rem 0.4rem;
+  margin: 0.75rem 1.4rem 0.4rem;
   border-radius: 10px;
   flex-shrink: 0;
 }
