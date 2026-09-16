@@ -284,6 +284,43 @@
   color: var(--accent);
 }
 
+.history-error-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.history-error-actions .history-retry-btn {
+  margin-top: 0;
+}
+
+.history-signin-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.95rem;
+  background: #c084fc;
+  border: 1px solid #c084fc;
+  color: #131318;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.history-signin-btn:hover:not(:disabled) {
+  background: #d8b4fe;
+  border-color: #d8b4fe;
+}
+
+.history-signin-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 @media (max-width: 600px) {
   .history-panel {
     width: 100vw;

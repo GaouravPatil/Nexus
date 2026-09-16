@@ -15,8 +15,10 @@ import {
   Layers,
   RotateCw,
   Brain,
-  Trash2
+  Trash2,
+  LogIn
 } from 'lucide-react'
+import { supabase } from './supabaseClient.js'
 import './HistoryPanel.css'
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://nexus-fftl.onrender.com'
@@ -57,49 +59,125 @@ export default function HistoryPanel({ onClose, session }) {
   const [memories, setMemories] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [errorStatus, setErrorStatus] = useState(null)
   const [expanded, setExpanded] = useState(null)
   const [search, setSearch] = useState('')
   const [clearing, setClearing] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
 
-  const getHeaders = () => {
+  const getHeaders = (tokenOverride) => {
     const headers = {}
-    if (session?.access_token) {
-      headers['Authorization'] = `Bearer ${session.access_token}`
+    const token = tokenOverride ?? session?.access_token
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
     }
     return headers
   }
 
-  const fetchHistory = () => {
-    setLoading(true)
-    setError(null)
-    fetch(HISTORY_URL, { headers: getHeaders() })
-      .then(r => {
-        if (!r.ok) throw new Error(`Server responded ${r.status}`)
-        return r.json()
-      })
-      .then(data => { setRecords(data); setLoading(false) })
-      .catch(err => { setError(err.message); setLoading(false) })
+  // Throw an Error carrying HTTP status + backend {"error"} message when present.
+  const throwForStatus = async (r) => {
+    if (r.ok) return r
+    let serverMsg = ''
+    try {
+      const body = await r.clone().json()
+      if (body && typeof body.error === 'string') serverMsg = body.error
+    } catch {
+      // non-JSON error body — fall through to status message
+    }
+    const err = new Error(serverMsg || `Server responded ${r.status}`)
+    err.status = r.status
+    throw err
   }
 
-  const fetchMemories = () => {
+  const fail = (err) => {
+    const status = err?.status ?? (err instanceof TypeError ? 'network' : null)
+    setErrorStatus(status)
+    if (status === 401) {
+      setError(err.message && !err.message.startsWith('Server responded')
+        ? err.message
+        : 'Your login session was rejected by the backend (401 Unauthorized).')
+    } else if (status === 'network' || err instanceof TypeError) {
+      setError('Cannot reach the backend server.')
+    } else {
+      setError(err.message)
+    }
+    setLoading(false)
+  }
+
+  // On 401, try one silent Supabase refresh before surfacing the error.
+  // App.jsx's onAuthStateChange will pick up the refreshed session and refetch.
+  const tryRefreshAndRetry = async (retryFn) => {
+    try {
+      const { data, error: refreshErr } = await supabase.auth.refreshSession()
+      if (!refreshErr && data?.session?.access_token) {
+        retryFn(data.session.access_token)
+        return true
+      }
+    } catch {
+      // ignore — fall through to showing the auth error
+    }
+    return false
+  }
+
+  const fetchHistory = (tokenOverride, _retried = false) => {
     setLoading(true)
     setError(null)
-    fetch(MEMORIES_URL, { headers: getHeaders() })
-      .then(r => {
-        if (!r.ok) throw new Error(`Server responded ${r.status}`)
-        return r.json()
+    setErrorStatus(null)
+    fetch(HISTORY_URL, { headers: getHeaders(tokenOverride) })
+      .then(throwForStatus)
+      .then(r => r.json())
+      .then(data => { setRecords(data); setLoading(false) })
+      .catch(async (err) => {
+        if (err?.status === 401 && !_retried && session) {
+          const retried = await tryRefreshAndRetry((t) => fetchHistory(t, true))
+          if (retried) return
+        }
+        fail(err)
       })
+  }
+
+  const fetchMemories = (tokenOverride, _retried = false) => {
+    setLoading(true)
+    setError(null)
+    setErrorStatus(null)
+    fetch(MEMORIES_URL, { headers: getHeaders(tokenOverride) })
+      .then(throwForStatus)
+      .then(r => r.json())
       .then(data => { setMemories(data); setLoading(false) })
-      .catch(err => { setError(err.message); setLoading(false) })
+      .catch(async (err) => {
+        if (err?.status === 401 && !_retried && session) {
+          const retried = await tryRefreshAndRetry((t) => fetchMemories(t, true))
+          if (retried) return
+        }
+        fail(err)
+      })
+  }
+
+  const handleSignInAgain = async () => {
+    setSigningOut(true)
+    try {
+      await supabase.auth.signOut()
+    } finally {
+      setSigningOut(false)
+      onClose()
+    }
   }
 
   const clearMemories = () => {
     if (!confirm('Are you sure you want to clear all semantic RAG memories for your user account?')) return
     setClearing(true)
     fetch(MEMORIES_URL, { method: 'DELETE', headers: getHeaders() })
+      .then(throwForStatus)
       .then(r => r.json())
       .then(() => { setMemories([]); setClearing(false) })
-      .catch(err => { alert('Failed to clear memories: ' + err.message); setClearing(false) })
+      .catch(async (err) => {
+        setClearing(false)
+        if (err?.status === 401) {
+          alert('Session expired — please sign in again, then retry clearing memories.')
+        } else {
+          alert('Failed to clear memories: ' + err.message)
+        }
+      })
   }
 
   useEffect(() => {
@@ -192,11 +270,34 @@ export default function HistoryPanel({ onClose, session }) {
           {error && (
             <div className="history-state history-state-error">
               <AlertTriangle size={22} />
-              <p>{error}</p>
-              <p className="history-state-hint">Make sure the backend server ({API_URL}) is reachable</p>
-              <button className="history-retry-btn" onClick={activeTab === 'queries' ? fetchHistory : fetchMemories}>
-                <RotateCw size={14} /> Retry
-              </button>
+              <p>{errorStatus === 401 ? 'Session expired — please sign in again' : error}</p>
+              {errorStatus === 401 ? (
+                <>
+                  <p className="history-state-hint">
+                    The backend ({API_URL}) rejected your login token. Your session may have
+                    expired, or the frontend/backend Supabase projects do not match.
+                  </p>
+                  <div className="history-error-actions">
+                    <button
+                      className="history-signin-btn"
+                      onClick={handleSignInAgain}
+                      disabled={signingOut}
+                    >
+                      <LogIn size={14} /> {signingOut ? 'Signing out…' : 'Sign in again'}
+                    </button>
+                    <button className="history-retry-btn" onClick={activeTab === 'queries' ? () => fetchHistory() : () => fetchMemories()}>
+                      <RotateCw size={14} /> Retry
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="history-state-hint">Make sure the backend server ({API_URL}) is reachable</p>
+                  <button className="history-retry-btn" onClick={activeTab === 'queries' ? () => fetchHistory() : () => fetchMemories()}>
+                    <RotateCw size={14} /> Retry
+                  </button>
+                </>
+              )}
             </div>
           )}
 
