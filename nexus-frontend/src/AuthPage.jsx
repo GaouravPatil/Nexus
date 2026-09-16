@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Sparkles,
   Zap,
@@ -25,14 +25,38 @@ import BlurText from './BlurText.jsx'
 import BorderGlow from './BorderGlow.jsx'
 import './AuthPage.css'
 
-export default function AuthPage({ theme = 'dark', onToggleTheme, onAuthSuccess, onGuestMode }) {
-  const [tab, setTab] = useState('signin')
+export default function AuthPage({ theme = 'dark', onToggleTheme, onAuthSuccess, onGuestMode, initialTab = 'signin' }) {
+  const [tab, setTab] = useState(initialTab)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState(null)
   const [info, setInfo] = useState(null)
   const [loading, setLoading] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
+  const [resetSent, setResetSent] = useState(false)
+
+  // If the user lands via a Supabase recovery link (?code=… or #…type=recovery),
+  // supabase-js fires PASSWORD_RECOVERY — switch to the "set new password" form.
+  useEffect(() => {
+    try {
+      const hash = window.location.hash || ''
+      const search = window.location.search || ''
+      if (hash.includes('type=recovery') || search.includes('type=recovery') || search.includes('code=')) {
+        setTab('update')
+      }
+    } catch { /* non-browser env */ }
+    if (!isSupabaseConfigured) return
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setTab('update')
+        setError(null)
+        setInfo('Reset link verified. Choose a new password below.')
+      }
+    })
+    return () => listener?.subscription?.unsubscribe()
+  }, [])
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -45,7 +69,29 @@ export default function AuthPage({ theme = 'dark', onToggleTheme, onAuthSuccess,
         throw new Error('Supabase Auth is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to nexus-frontend/.env')
       }
 
-      if (tab === 'signin') {
+      if (tab === 'forgot') {
+        if (!email.trim()) throw new Error('Enter your account email first.')
+        const redirectTo = typeof window !== 'undefined' ? window.location.origin : undefined
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), redirectTo ? { redirectTo } : undefined)
+        if (error) throw error
+        setResetSent(true)
+        setInfo('Password reset link sent! Check your inbox (and spam folder), then follow the link to set a new password.')
+      } else if (tab === 'update') {
+        if (newPassword.length < 6) throw new Error('New password must be at least 6 characters.')
+        if (newPassword !== confirmPassword) throw new Error('Passwords do not match.')
+        const { data, error } = await supabase.auth.updateUser({ password: newPassword })
+        if (error) throw error
+        try { window.history.replaceState({}, '', window.location.pathname) } catch { /* noop */ }
+        setNewPassword('')
+        setConfirmPassword('')
+        if (data?.session) {
+          onAuthSuccess(data.user, data.session)
+        } else {
+          setInfo('Password updated! You can now sign in with your new password.')
+          setTab('signin')
+          setPassword('')
+        }
+      } else if (tab === 'signin') {
         const { data, error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
         onAuthSuccess(data.user, data.session)
@@ -241,6 +287,7 @@ export default function AuthPage({ theme = 'dark', onToggleTheme, onAuthSuccess,
               <span className="strip-tag" style={{ borderColor: 'rgba(110, 142, 240, 0.3)', color: '#6E8EF0' }}><Wind size={12} /> Mistral</span>
               <span className="strip-tag" style={{ borderColor: 'rgba(16, 163, 127, 0.3)', color: '#10a37f' }}><Bot size={12} /> OpenAI</span>
               <span className="strip-tag" style={{ borderColor: 'rgba(232, 168, 32, 0.3)', color: '#E8A820' }}><Gem size={12} /> Gemini</span>
+              <span className="strip-tag" style={{ borderColor: 'rgba(16, 163, 127, 0.3)', color: '#10a37f' }}><Bot size={12} /> DeepSeek</span>
             </div>
           </div>
         </div>
@@ -256,64 +303,125 @@ export default function AuthPage({ theme = 'dark', onToggleTheme, onAuthSuccess,
             fillOpacity={0.4}
           >
             <div className="auth-card">
-              <div className="auth-tabs">
-                <button
-                  type="button"
-                  className={`auth-tab ${tab === 'signin' ? 'active' : ''}`}
-                  onClick={() => { setTab('signin'); setError(null); setInfo(null) }}
-                >
-                  Sign In
-                </button>
-                <button
-                  type="button"
-                  className={`auth-tab ${tab === 'signup' ? 'active' : ''}`}
-                  onClick={() => { setTab('signup'); setError(null); setInfo(null) }}
-                >
-                  Create Account
-                </button>
-              </div>
+              {(tab === 'signin' || tab === 'signup') && (
+                <div className="auth-tabs">
+                  <button
+                    type="button"
+                    className={`auth-tab ${tab === 'signin' ? 'active' : ''}`}
+                    onClick={() => { setTab('signin'); setError(null); setInfo(null) }}
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    type="button"
+                    className={`auth-tab ${tab === 'signup' ? 'active' : ''}`}
+                    onClick={() => { setTab('signup'); setError(null); setInfo(null) }}
+                  >
+                    Create Account
+                  </button>
+                </div>
+              )}
 
               <div className="auth-card-header">
-                <h3>{tab === 'signin' ? 'Welcome Back' : 'Get Started with Nexus'}</h3>
+                <h3>
+                  {tab === 'signin' ? 'Welcome Back'
+                    : tab === 'signup' ? 'Get Started with Nexus'
+                    : tab === 'forgot' ? 'Reset your password'
+                    : 'Choose a new password'}
+                </h3>
                 <p>
                   {tab === 'signin'
                     ? 'Sign in to access your user-scoped conversation history and cloud sync.'
-                    : 'Create an account to save histories securely across devices.'}
+                    : tab === 'signup'
+                      ? 'Create an account to save histories securely across devices.'
+                      : tab === 'forgot'
+                        ? 'Enter your account email and we’ll send you a secure reset link.'
+                        : 'Enter and confirm your new password below.'}
                 </p>
               </div>
 
               <form onSubmit={handleSubmit} className="auth-form">
-                <div className="auth-field">
-                  <label className="auth-label">Email Address</label>
-                  <div className="auth-input-wrap">
-                    <Mail size={16} className="auth-input-icon" />
-                    <input
-                      type="email"
-                      className="auth-input"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="name@example.com"
-                      required
-                      autoFocus
-                    />
-                  </div>
-                </div>
+                {tab === 'update' ? (
+                  <>
+                    <div className="auth-field">
+                      <label className="auth-label">New Password</label>
+                      <div className="auth-input-wrap">
+                        <Lock size={16} className="auth-input-icon" />
+                        <input
+                          type="password"
+                          className="auth-input"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="••••••••"
+                          required
+                          minLength={6}
+                          autoFocus
+                        />
+                      </div>
+                    </div>
 
-                <div className="auth-field">
-                  <label className="auth-label">Password</label>
-                  <div className="auth-input-wrap">
-                    <Lock size={16} className="auth-input-icon" />
-                    <input
-                      type="password"
-                      className="auth-input"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••"
-                      required
-                      minLength={6}
-                    />
-                  </div>
-                </div>
+                    <div className="auth-field">
+                      <label className="auth-label">Confirm New Password</label>
+                      <div className="auth-input-wrap">
+                        <Lock size={16} className="auth-input-icon" />
+                        <input
+                          type="password"
+                          className="auth-input"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          placeholder="••••••••"
+                          required
+                          minLength={6}
+                        />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="auth-field">
+                      <label className="auth-label">Email Address</label>
+                      <div className="auth-input-wrap">
+                        <Mail size={16} className="auth-input-icon" />
+                        <input
+                          type="email"
+                          className="auth-input"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          placeholder="name@example.com"
+                          required
+                          autoFocus
+                        />
+                      </div>
+                    </div>
+
+                    {tab !== 'forgot' && (
+                      <div className="auth-field">
+                        <label className="auth-label">Password</label>
+                        <div className="auth-input-wrap">
+                          <Lock size={16} className="auth-input-icon" />
+                          <input
+                            type="password"
+                            className="auth-input"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            placeholder="••••••••"
+                            required
+                            minLength={6}
+                          />
+                        </div>
+                        {tab === 'signin' && (
+                          <button
+                            type="button"
+                            className="auth-link-btn"
+                            onClick={() => { setTab('forgot'); setError(null); setInfo(null); setResetSent(false) }}
+                          >
+                            Forgot password?
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
 
                 {error && <div className="auth-alert error"><p>{error}</p></div>}
                 {info && <div className="auth-alert info"><p>{info}</p></div>}
@@ -321,15 +429,31 @@ export default function AuthPage({ theme = 'dark', onToggleTheme, onAuthSuccess,
                 <button type="submit" className="auth-submit-btn" disabled={loading}>
                   {loading ? (
                     <span className="btn-spinner-wrap">
-                      <span className="btn-spinner" /> Authenticating…
+                      <span className="btn-spinner" />
+                      {tab === 'forgot' ? 'Sending…' : tab === 'update' ? 'Updating…' : 'Authenticating…'}
                     </span>
                   ) : (
                     <>
-                      <span>{tab === 'signin' ? 'Sign In to Workspace' : 'Create Account'}</span>
+                      <span>
+                        {tab === 'signin' ? 'Sign In to Workspace'
+                          : tab === 'signup' ? 'Create Account'
+                          : tab === 'forgot' ? (resetSent ? 'Resend reset link' : 'Send reset link')
+                          : 'Update password'}
+                      </span>
                       <ArrowRight size={16} />
                     </>
                   )}
                 </button>
+
+                {(tab === 'forgot' || tab === 'update') && (
+                  <button
+                    type="button"
+                    className="auth-link-btn auth-back-btn"
+                    onClick={() => { setTab('signin'); setError(null); setInfo(null) }}
+                  >
+                    ← Back to sign in
+                  </button>
+                )}
               </form>
 
               <div className="auth-divider">

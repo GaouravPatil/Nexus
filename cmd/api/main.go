@@ -4,6 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -12,6 +16,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
@@ -24,54 +29,317 @@ import (
 )
 
 // ================= Auth & Context Middleware =================
+// Secure verification for Supabase Auth JWTs (ES256 via JWKS, HS256 via secret).
+// Unauthenticated requests → "guest". Present-but-invalid tokens → 401 (fail closed).
 
 type contextKey string
 
 const userIDKey contextKey = "user_id"
 
-func parseJWTUserID(tokenStr string) (string, error) {
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) < 2 {
-		return "", errors.New("invalid jwt format")
+type jwtHeader struct {
+	Alg string `json:"alg"`
+	Kid string `json:"kid"`
+	Typ string `json:"typ"`
+}
+
+type jwtClaims struct {
+	Sub   string `json:"sub"`
+	Email string `json:"email"`
+	Exp   int64  `json:"exp"`
+	Iss   string `json:"iss"`
+	Role  string `json:"role"`
+}
+
+type jwksKey struct {
+	Kid string `json:"kid"`
+	Kty string `json:"kty"`
+	Crv string `json:"crv"`
+	Alg string `json:"alg"`
+	Use string `json:"use"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
+}
+
+type jwksDoc struct {
+	Keys []jwksKey `json:"keys"`
+}
+
+var jwksCache = struct {
+	sync.RWMutex
+	keys      map[string]*ecdsa.PublicKey
+	fetchedAt time.Time
+}{
+	keys: make(map[string]*ecdsa.PublicKey),
+}
+
+func getSupabaseURL() string {
+	u := strings.TrimSpace(os.Getenv("SUPABASE_URL"))
+	return strings.TrimSuffix(u, "/")
+}
+
+func getSupabaseAnonKey() string {
+	return strings.TrimSpace(os.Getenv("SUPABASE_ANON_KEY"))
+}
+
+func getJWTSecret() string {
+	if s := strings.TrimSpace(os.Getenv("SUPABASE_JWT_SECRET")); s != "" {
+		return s
 	}
-	payloadSegment := parts[1]
-	if l := len(payloadSegment) % 4; l > 0 {
-		payloadSegment += strings.Repeat("=", 4-l)
+	return strings.TrimSpace(os.Getenv("JWT_SECRET"))
+}
+
+func fetchJWKS(ctx context.Context) (map[string]*ecdsa.PublicKey, error) {
+	supabaseURL := getSupabaseURL()
+	if supabaseURL == "" {
+		return nil, errors.New("SUPABASE_URL is not configured")
 	}
-	decoded, err := base64.URLEncoding.DecodeString(payloadSegment)
+	jwksURL := supabaseURL + "/auth/v1/.well-known/jwks.json"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, nil)
 	if err != nil {
-		decoded, err = base64.RawURLEncoding.DecodeString(parts[1])
-		if err != nil {
-			return "", err
+		return nil, err
+	}
+	if anon := getSupabaseAnonKey(); anon != "" {
+		req.Header.Set("apikey", anon)
+	}
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return nil, fmt.Errorf("jwks fetch status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var doc jwksDoc
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		return nil, err
+	}
+	out := make(map[string]*ecdsa.PublicKey, len(doc.Keys))
+	for _, k := range doc.Keys {
+		if k.Kty != "EC" || k.X == "" || k.Y == "" {
+			continue
+		}
+		xb, err1 := base64.RawURLEncoding.DecodeString(k.X)
+		yb, err2 := base64.RawURLEncoding.DecodeString(k.Y)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		out[k.Kid] = &ecdsa.PublicKey{
+			Curve: elliptic.P256(),
+			X:     new(big.Int).SetBytes(xb),
+			Y:     new(big.Int).SetBytes(yb),
 		}
 	}
-	var claims struct {
+	if len(out) == 0 {
+		return nil, errors.New("jwks contained no usable EC keys")
+	}
+	return out, nil
+}
+
+func getJWTPublicKey(ctx context.Context, kid string) (*ecdsa.PublicKey, error) {
+	jwksCache.RLock()
+	key, ok := jwksCache.keys[kid]
+	fresh := time.Since(jwksCache.fetchedAt) < time.Hour
+	jwksCache.RUnlock()
+	if ok && fresh {
+		return key, nil
+	}
+	keys, err := fetchJWKS(ctx)
+	if err != nil {
+		// Serve stale key if we have one (rotation tolerance).
+		if ok {
+			return key, nil
+		}
+		return nil, err
+	}
+	jwksCache.Lock()
+	jwksCache.keys = keys
+	jwksCache.fetchedAt = time.Now()
+	key, ok = keys[kid]
+	jwksCache.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown key id %q", kid)
+	}
+	return key, nil
+}
+
+func verifyES256(headerB64, payloadB64, sigB64, kid string) (jwtClaims, error) {
+	var claims jwtClaims
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	pub, err := getJWTPublicKey(ctx, kid)
+	if err != nil {
+		return claims, err
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(sigB64)
+	if err != nil || len(sig) != 64 {
+		return claims, errors.New("invalid ES256 signature encoding")
+	}
+	r := new(big.Int).SetBytes(sig[:32])
+	s := new(big.Int).SetBytes(sig[32:])
+	signingInput := headerB64 + "." + payloadB64
+	hash := sha256.Sum256([]byte(signingInput))
+	if !ecdsa.Verify(pub, hash[:], r, s) {
+		return claims, errors.New("invalid JWT signature")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return claims, errors.New("invalid JWT payload")
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return claims, errors.New("invalid JWT claims")
+	}
+	return claims, nil
+}
+
+func verifyHS256(headerB64, payloadB64, sigB64, secret string) (jwtClaims, error) {
+	var claims jwtClaims
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(headerB64 + "." + payloadB64))
+	expected := mac.Sum(nil)
+	sig, err := base64.RawURLEncoding.DecodeString(sigB64)
+	if err != nil {
+		return claims, errors.New("invalid HS256 signature encoding")
+	}
+	if !hmac.Equal(sig, expected) {
+		return claims, errors.New("invalid JWT signature")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(payloadB64)
+	if err != nil {
+		return claims, errors.New("invalid JWT payload")
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return claims, errors.New("invalid JWT claims")
+	}
+	return claims, nil
+}
+
+// verifyViaSupabaseAPI falls back to asking Supabase who owns this token.
+// Used when local JWKS verification is unavailable (e.g. rotation/network).
+func verifyViaSupabaseAPI(ctx context.Context, token string) (string, error) {
+	supabaseURL := getSupabaseURL()
+	anon := getSupabaseAnonKey()
+	if supabaseURL == "" || anon == "" {
+		return "", errors.New("supabase API verification not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, supabaseURL+"/auth/v1/user", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("apikey", anon)
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.New("supabase rejected token")
+	}
+	var u struct {
+		ID    string `json:"id"`
 		Sub   string `json:"sub"`
 		Email string `json:"email"`
 	}
-	if err := json.Unmarshal(decoded, &claims); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&u); err != nil {
 		return "", err
+	}
+	if u.ID != "" {
+		return u.ID, nil
+	}
+	if u.Sub != "" {
+		return u.Sub, nil
+	}
+	if u.Email != "" {
+		return u.Email, nil
+	}
+	return "", errors.New("supabase user has no id")
+}
+
+func verifySupabaseJWT(token string) (string, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", errors.New("invalid jwt format")
+	}
+	headerB64, payloadB64, sigB64 := parts[0], parts[1], parts[2]
+	rawHeader, err := base64.RawURLEncoding.DecodeString(headerB64)
+	if err != nil {
+		return "", errors.New("invalid jwt header")
+	}
+	var hdr jwtHeader
+	if err := json.Unmarshal(rawHeader, &hdr); err != nil {
+		return "", errors.New("invalid jwt header")
+	}
+
+	var claims jwtClaims
+	switch hdr.Alg {
+	case "ES256":
+		claims, err = verifyES256(headerB64, payloadB64, sigB64, hdr.Kid)
+		if err != nil {
+			// Fall back to Supabase API before giving up (tolerates JWKS propagation delay).
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			if id, apiErr := verifyViaSupabaseAPI(ctx, token); apiErr == nil {
+				return id, nil
+			}
+			return "", err
+		}
+	case "HS256":
+		secret := getJWTSecret()
+		if secret == "" {
+			return "", errors.New("HS256 token but no SUPABASE_JWT_SECRET configured")
+		}
+		claims, err = verifyHS256(headerB64, payloadB64, sigB64, secret)
+		if err != nil {
+			return "", err
+		}
+	default:
+		return "", fmt.Errorf("unsupported jwt alg %q", hdr.Alg)
+	}
+
+	if claims.Exp != 0 && time.Now().Unix() > claims.Exp+30 {
+		return "", errors.New("token is expired")
+	}
+	// Anonymous / service keys carry no user identity — never accept them as a user.
+	if claims.Sub == "" && claims.Email == "" {
+		return "", errors.New("token has no user identity")
 	}
 	if claims.Sub != "" {
 		return claims.Sub, nil
 	}
-	if claims.Email != "" {
-		return claims.Email, nil
-	}
-	return "", errors.New("no sub or email claim found")
+	return claims.Email, nil
 }
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID := "guest"
 		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if token != "" {
-				if id, err := parseJWTUserID(token); err == nil && id != "" {
-					userID = id
-				}
-			}
+		if authHeader == "" {
+			// Guest mode: no token sent.
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey, "guest")))
+			return
+		}
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid authorization header, expected Bearer <token>"})
+			return
+		}
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		if token == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "missing bearer token"})
+			return
+		}
+		userID, err := verifySupabaseJWT(token)
+		if err != nil {
+			log.Printf("auth: rejected token: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid or expired token"})
+			return
 		}
 		ctx := context.WithValue(r.Context(), userIDKey, userID)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -149,12 +417,13 @@ func generateOpenAIEmbedding(ctx context.Context, apiKey, text string) ([]float3
 }
 
 func generateGeminiEmbedding(ctx context.Context, apiKey, text string) ([]float32, error) {
-	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=%s", apiKey)
+	url := fmt.Sprintf("https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=%s", apiKey)
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": "models/text-embedding-004",
+		"model": "models/gemini-embedding-001",
 		"content": map[string]interface{}{
 			"parts": []map[string]string{{"text": text}},
 		},
+		"outputDimensionality": 1536, // request 1536 directly instead of truncating 3072
 	})
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
@@ -467,10 +736,11 @@ func handleMemories(w http.ResponseWriter, r *http.Request) {
 
 // providerCostPer1K holds approximate cost per 1K output tokens in USD.
 var providerCostPer1K = map[string]float64{
-	"groq":    0.00059, // groq/compound
-	"mistral": 0.00200, // mistral-small-latest
-	"chatgpt": 0.00600, // gpt-4o-mini
-	"gemini":  0.00035, // gemini-2.5-flash
+	"groq":     0.00059, // groq/compound
+	"mistral":  0.00200, // mistral-small-latest
+	"chatgpt":  0.00600, // gpt-4o-mini
+	"gemini":   0.00035, // gemini-2.5-flash
+	"deepseek": 0.00027, // deepseek-v4-flash
 }
 
 type providerMetrics struct {
@@ -483,10 +753,11 @@ type providerMetrics struct {
 var pMetrics = &providerMetrics{
 	// Seed with reasonable defaults so first auto-route isn't arbitrary.
 	emaLatencyMs: map[string]float64{
-		"groq":    200,
-		"mistral": 400,
-		"chatgpt": 300,
-		"gemini":  350,
+		"groq":     200,
+		"mistral":  400,
+		"chatgpt":  300,
+		"gemini":   350,
+		"deepseek": 250,
 	},
 	callCount:  make(map[string]int64),
 	errorCount: make(map[string]int64),
@@ -518,13 +789,13 @@ func (m *providerMetrics) snapshot() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make(map[string]interface{})
-	for _, p := range []string{"groq", "mistral", "chatgpt", "gemini"} {
+	for _, p := range []string{"groq", "mistral", "chatgpt", "gemini", "deepseek"} {
 		out[p] = map[string]interface{}{
-			"ema_latency_ms": math.Round(m.emaLatencyMs[p]*10) / 10,
+			"ema_latency_ms":  math.Round(m.emaLatencyMs[p]*10) / 10,
 			"cost_per_1k_usd": providerCostPer1K[p],
-			"calls":          m.callCount[p],
-			"errors":         m.errorCount[p],
-			"score":          math.Round(m.score(p)*1000) / 1000,
+			"calls":           m.callCount[p],
+			"errors":          m.errorCount[p],
+			"score":           math.Round(m.score(p)*1000) / 1000,
 		}
 	}
 	return out
@@ -707,6 +978,33 @@ func callGemini(history []message) (string, error) {
 	}
 	pMetrics.record("gemini", float64(time.Since(t0).Milliseconds()), false)
 	return result.Candidates[0].Content.Parts[0].Text, nil
+}
+
+// ================= DeepSeek adapter =================
+
+func callDeepseek(history []message) (string, error) {
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		return "", errors.New("DEEPSEEK_API_KEY environment variable is not set")
+	}
+	reqBody := chatRequest{Model: "deepseek-v4-flash", Messages: history}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	t0 := time.Now()
+	res, err := sendChatRequest(ctx, "https://integrate.api.nvidia.com/v1", apiKey, reqBody, "deepseek")
+	pMetrics.record("deepseek", float64(time.Since(t0).Milliseconds()), err != nil)
+	return res, err
+}
+
+func streamDeepseek(ctx context.Context, history []message, out chan<- string) error {
+	apiKey := os.Getenv("DEEPSEEK_API_KEY")
+	if apiKey == "" {
+		return errors.New("DEEPSEEK_API_KEY not set")
+	}
+	t0 := time.Now()
+	err := streamOpenAICompat(ctx, "https://integrate.api.nvidia.com/v1", apiKey, "deepseek-v4-flash", history, out)
+	pMetrics.record("deepseek", float64(time.Since(t0).Milliseconds()), err != nil)
+	return err
 }
 
 // streamGemini: Real token-level SSE streaming via Gemini's streamGenerateContent endpoint.
@@ -1151,6 +1449,8 @@ This summary will be given to you (as %s) as context before the user's next mess
 		summary, err = callOpenAI(summaryHistory)
 	case "gemini":
 		summary, err = callGemini(summaryHistory)
+	case "deepseek":
+		summary, err = callDeepseek(summaryHistory)
 	default:
 		summary, err = callGroq(summaryHistory)
 	}
@@ -1210,6 +1510,8 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		answer, err = callOpenAI(history)
 	case "gemini":
 		answer, err = callGemini(history)
+	case "deepseek":
+		answer, err = callDeepseek(history)
 	case "ensemble":
 		answer, rawAnswers, err = callEnsemble(history)
 	default:
@@ -1335,6 +1637,8 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 			err = streamOpenAI(ctx, history, tokenCh)
 		case "gemini":
 			err = streamGemini(ctx, history, tokenCh)
+		case "deepseek":
+			err = streamDeepseek(ctx, history, tokenCh)
 		default:
 			err = fmt.Errorf("unknown provider %q", provider)
 		}

@@ -62,6 +62,7 @@ const PROVIDER_COLORS = {
   mistral: '#6E8EF0',
   chatgpt: '#10a37f',
   gemini: '#E8A820',
+  deepseek: '#10a37f',
   ensemble: '#c084fc',
   auto: '#888',
 }
@@ -72,6 +73,7 @@ const MODEL_ICONS = {
   mistral: Wind,
   chatgpt: Bot,
   gemini: Gem,
+  deepseek: Brain,
   ensemble: Layers,
 }
 
@@ -128,6 +130,7 @@ function ModelSelector({ provider, onProviderChange, disabled }) {
     { id: 'mistral', name: 'Mistral', icon: Wind },
     { id: 'chatgpt', name: 'ChatGPT', icon: Bot },
     { id: 'gemini', name: 'Gemini', icon: Gem },
+    { id: 'deepseek', name: 'DeepSeek', icon: Brain },
     { id: 'ensemble', name: 'Ensemble', icon: Layers },
   ]
 
@@ -374,6 +377,15 @@ function App() {
   // Auth state
   const [session, setSession] = useState(null)
   const [user, setUser] = useState(null)
+  const [recoveryMode, setRecoveryMode] = useState(() => {
+    try {
+      const hash = window.location.hash || ''
+      const search = window.location.search || ''
+      return hash.includes('type=recovery') || search.includes('type=recovery') || search.includes('code=')
+    } catch {
+      return false
+    }
+  })
   const [isGuest, setIsGuest] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('nexus-guest-mode') === 'true'
@@ -435,6 +447,9 @@ function App() {
       })
 
     const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (_event === 'PASSWORD_RECOVERY') {
+        setRecoveryMode(true)
+      }
       setSession(session ?? null)
       setUser(session?.user ?? null)
       if (session) {
@@ -771,14 +786,16 @@ function App() {
     onRemoveAttachment: handleRemoveAttachment,
   }
 
-  if (authReady && !session && !isGuest) {
+  if (authReady && (!session || recoveryMode) && !isGuest) {
     return (
       <AuthPage
         theme={theme}
+        initialTab={recoveryMode ? 'update' : 'signin'}
         onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
         onAuthSuccess={(u, s) => {
           setUser(u)
           setSession(s)
+          setRecoveryMode(false)
           setIsGuest(false)
           localStorage.removeItem('nexus-guest-mode')
         }}

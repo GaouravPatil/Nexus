@@ -392,6 +392,29 @@
   cursor: not-allowed;
 }
 
+.auth-link-btn {
+  align-self: flex-end;
+  margin-top: 0.4rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent, #6E8EF0);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+.auth-link-btn:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+
+.auth-back-btn {
+  align-self: center;
+  margin-top: 0.25rem;
+}
+
 .btn-spinner-wrap {
   display: inline-flex;
   align-items: center;
