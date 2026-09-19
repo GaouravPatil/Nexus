@@ -744,11 +744,17 @@ var providerCostPer1K = map[string]float64{
 }
 
 type providerMetrics struct {
-	mu           sync.RWMutex
-	emaLatencyMs map[string]float64
-	callCount    map[string]int64
-	errorCount   map[string]int64
+	mu                sync.RWMutex
+	emaLatencyMs      map[string]float64
+	callCount         map[string]int64
+	errorCount        map[string]int64
+	consecutiveErrors map[string]int64
+	lastErrorAt       map[string]time.Time
 }
+
+// cooldownAfterError is how long a failed provider is skipped by auto-routing.
+// Covers per-minute 429 windows (e.g. Mistral code 1300) while recovering fast.
+const cooldownAfterError = 90 * time.Second
 
 var pMetrics = &providerMetrics{
 	// Seed with reasonable defaults so first auto-route isn't arbitrary.
@@ -759,8 +765,10 @@ var pMetrics = &providerMetrics{
 		"gemini":   350,
 		"deepseek": 250,
 	},
-	callCount:  make(map[string]int64),
-	errorCount: make(map[string]int64),
+	callCount:         make(map[string]int64),
+	errorCount:        make(map[string]int64),
+	consecutiveErrors: make(map[string]int64),
+	lastErrorAt:       make(map[string]time.Time),
 }
 
 func (m *providerMetrics) record(provider string, latencyMs float64, failed bool) {
@@ -769,15 +777,29 @@ func (m *providerMetrics) record(provider string, latencyMs float64, failed bool
 	m.callCount[provider]++
 	if failed {
 		m.errorCount[provider]++
+		m.consecutiveErrors[provider]++
+		m.lastErrorAt[provider] = time.Now()
 		return
 	}
+	m.consecutiveErrors[provider] = 0
 	const alpha = 0.3 // EMA factor — higher = more weight on recent calls
 	m.emaLatencyMs[provider] = alpha*latencyMs + (1-alpha)*m.emaLatencyMs[provider]
 }
 
-func (m *providerMetrics) score(provider string) float64 {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+// inCooldownLocked reports whether provider recently failed and should be
+// skipped by auto-routing. Caller must hold (at least) RLock.
+func (m *providerMetrics) inCooldownLocked(provider string) bool {
+	if m.consecutiveErrors[provider] == 0 {
+		return false
+	}
+	since := time.Since(m.lastErrorAt[provider])
+	return since < cooldownAfterError
+}
+
+func (m *providerMetrics) scoreLocked(provider string) float64 {
+	if m.inCooldownLocked(provider) {
+		return math.Inf(1)
+	}
 	// Normalize latency (ceiling 3 s) and cost (ceiling $0.01/1K).
 	nLatency := math.Min(m.emaLatencyMs[provider]/3000.0, 1.0)
 	nCost := math.Min(providerCostPer1K[provider]/0.01, 1.0)
@@ -785,17 +807,29 @@ func (m *providerMetrics) score(provider string) float64 {
 	return 0.6*nLatency + 0.4*nCost
 }
 
+func (m *providerMetrics) score(provider string) float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.scoreLocked(provider)
+}
+
 func (m *providerMetrics) snapshot() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make(map[string]interface{})
 	for _, p := range []string{"groq", "mistral", "chatgpt", "gemini", "deepseek"} {
+		s := m.scoreLocked(p)
+		if math.IsInf(s, 1) {
+			s = -1 // -1 signals "in cooldown" to API consumers
+		}
 		out[p] = map[string]interface{}{
-			"ema_latency_ms":  math.Round(m.emaLatencyMs[p]*10) / 10,
-			"cost_per_1k_usd": providerCostPer1K[p],
-			"calls":           m.callCount[p],
-			"errors":          m.errorCount[p],
-			"score":           math.Round(m.score(p)*1000) / 1000,
+			"ema_latency_ms":   math.Round(m.emaLatencyMs[p]*10) / 10,
+			"cost_per_1k_usd":  providerCostPer1K[p],
+			"calls":            m.callCount[p],
+			"errors":           m.errorCount[p],
+			"consecutive_errs": m.consecutiveErrors[p],
+			"in_cooldown":      m.inCooldownLocked(p),
+			"score":            math.Round(s*1000) / 1000,
 		}
 	}
 	return out
@@ -1245,19 +1279,84 @@ func sendChatRequest(ctx context.Context, url, apiKey string, reqBody chatReques
 // ================= Router =================
 
 // selectProvider picks the best provider using a composite score of
-// EMA latency (60 %) and cost-per-token (40 %). Falls back to groq
+// EMA latency (60 %) and cost-per-token (40 %). Providers in failure
+// cooldown (e.g. recent 429) are skipped. Falls back to groq
 // when no meaningful data exists yet.
 func selectProvider(_ string) string {
+	ranked := rankedProviders()
+	if len(ranked) > 0 {
+		return ranked[0]
+	}
+	return "groq"
+}
+
+// rankedProviders returns auto candidates ordered best-first, skipping
+// providers in failure cooldown. If all are cooling down, returns them
+// ordered by oldest failure first so auto still has somewhere to go.
+func rankedProviders() []string {
 	candidates := []string{"groq", "mistral", "gemini"} // exclude chatgpt from auto (higher cost)
-	best := candidates[0]
-	bestScore := pMetrics.score(best)
-	for _, p := range candidates[1:] {
-		if s := pMetrics.score(p); s < bestScore {
-			bestScore = s
-			best = p
+	type scored struct {
+		name  string
+		score float64
+	}
+	var ok, cooled []scored
+	for _, p := range candidates {
+		s := pMetrics.score(p)
+		if math.IsInf(s, 1) {
+			cooled = append(cooled, scored{p, s})
+			continue
+		}
+		ok = append(ok, scored{p, s})
+	}
+	for i := 0; i < len(ok)-1; i++ {
+		for j := i + 1; j < len(ok); j++ {
+			if ok[j].score < ok[i].score {
+				ok[i], ok[j] = ok[j], ok[i]
+			}
 		}
 	}
-	return best
+	if len(ok) > 0 {
+		out := make([]string, 0, len(ok))
+		for _, s := range ok {
+			out = append(out, s.name)
+		}
+		return out
+	}
+	// All cooling down — still return candidates so caller can surface
+	// the underlying provider error instead of a generic "all down".
+	out := make([]string, 0, len(cooled))
+	for _, s := range cooled {
+		out = append(out, s.name)
+	}
+	if len(out) == 0 {
+		return candidates
+	}
+	return out
+}
+
+// callProvider dispatches a non-streaming request to one provider.
+func callProvider(provider string, history []message) (string, map[string]string, error) {
+	switch provider {
+	case "groq":
+		answer, err := callGroq(history)
+		return answer, nil, err
+	case "mistral":
+		answer, err := callMistral(history)
+		return answer, nil, err
+	case "chatgpt":
+		answer, err := callOpenAI(history)
+		return answer, nil, err
+	case "gemini":
+		answer, err := callGemini(history)
+		return answer, nil, err
+	case "deepseek":
+		answer, err := callDeepseek(history)
+		return answer, nil, err
+	case "ensemble":
+		return callEnsemble(history)
+	default:
+		return "", nil, fmt.Errorf(`unknown provider %q`, provider)
+	}
 }
 
 // ================= Database =================
@@ -1497,33 +1596,45 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 	history, _ = injectMemoryRAGContext(r.Context(), userID, lastPrompt, history)
 
 	provider := req.Provider
-	if provider == "" || provider == "auto" {
+	isAuto := provider == "" || provider == "auto"
+	if isAuto {
 		provider = selectProvider(lastPrompt)
 	}
 	var answer string
 	var rawAnswers map[string]string
 	var err error
-	switch provider {
-	case "groq":
-		answer, err = callGroq(history)
-	case "mistral":
-		answer, err = callMistral(history)
-	case "chatgpt":
-		answer, err = callOpenAI(history)
-	case "gemini":
-		answer, err = callGemini(history)
-	case "deepseek":
-		answer, err = callDeepseek(history)
-	case "ensemble":
-		answer, rawAnswers, err = callEnsemble(history)
-	default:
-		http.Error(w, fmt.Sprintf(`unknown provider %q`, provider), http.StatusBadRequest)
-		return
-	}
-	if err != nil {
-		log.Printf("call%s error: %v", provider, err)
-		http.Error(w, fmt.Sprintf("failed to get response from %s: %v", provider, err), http.StatusInternalServerError)
-		return
+	if isAuto {
+		// Try ranked providers in order so a rate-limited pick (e.g.
+		// Mistral 429) fails over to the next healthy one automatically.
+		var lastErr error
+		var lastProvider string
+		for _, p := range rankedProviders() {
+			answer, rawAnswers, lastErr = callProvider(p, history)
+			lastProvider = p
+			if lastErr == nil {
+				provider = p
+				err = nil
+				break
+			}
+			log.Printf("auto fallback: %s failed, trying next: %v", p, lastErr)
+			err = lastErr
+		}
+		if err != nil {
+			log.Printf("auto: all providers failed (last %s): %v", lastProvider, err)
+			http.Error(w, fmt.Sprintf("all providers failed (last %s): %v", lastProvider, err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		answer, rawAnswers, err = callProvider(provider, history)
+		if err != nil {
+			if strings.HasPrefix(err.Error(), "unknown provider") {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			log.Printf("call%s error: %v", provider, err)
+			http.Error(w, fmt.Sprintf("failed to get response from %s: %v", provider, err), http.StatusInternalServerError)
+			return
+		}
 	}
 	userID = getUserIDFromContext(r.Context())
 	saveQuery(userID, lastPrompt, provider, answer)
