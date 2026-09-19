@@ -19,7 +19,7 @@ echo "Starting new container..."
 sudo docker run -d \
   --name "$CONTAINER" \
   --restart unless-stopped \
-  --env-file /home/ubuntu/Nexus/.env \
+  --env-file $HOME/Nexus/.env \
   -p 127.0.0.1:8080:8080 \
   "$IMAGE"
 
