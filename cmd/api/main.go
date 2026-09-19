@@ -987,11 +987,11 @@ func callDeepseek(history []message) (string, error) {
 	if apiKey == "" {
 		return "", errors.New("DEEPSEEK_API_KEY environment variable is not set")
 	}
-	reqBody := chatRequest{Model: "deepseek-v4-flash", Messages: history}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	reqBody := chatRequest{Model: "deepseek-ai/deepseek-v4-flash-0731", Messages: history}
+	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
 	defer cancel()
 	t0 := time.Now()
-	res, err := sendChatRequest(ctx, "https://integrate.api.nvidia.com/v1", apiKey, reqBody, "deepseek")
+	res, err := sendChatRequest(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", apiKey, reqBody, "deepseek")
 	pMetrics.record("deepseek", float64(time.Since(t0).Milliseconds()), err != nil)
 	return res, err
 }
@@ -1002,7 +1002,7 @@ func streamDeepseek(ctx context.Context, history []message, out chan<- string) e
 		return errors.New("DEEPSEEK_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://integrate.api.nvidia.com/v1", apiKey, "deepseek-v4-flash", history, out)
+	err := streamOpenAICompat(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", apiKey, "deepseek-ai/deepseek-v4-flash-0731", history, out)
 	pMetrics.record("deepseek", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
@@ -1211,7 +1211,7 @@ func sendChatRequest(ctx context.Context, url, apiKey string, reqBody chatReques
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 120 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return "", err
