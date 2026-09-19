@@ -21,7 +21,7 @@ import {
 import { supabase } from './supabaseClient.js'
 import './HistoryPanel.css'
 
-const API_URL = import.meta.env.VITE_API_URL || 'https://nexus-fftl.onrender.com'
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080'
 
 const HISTORY_URL = `${API_URL}/history`
 const MEMORIES_URL = `${API_URL}/memories`
