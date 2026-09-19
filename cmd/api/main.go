@@ -1047,6 +1047,7 @@ func streamGemini(ctx context.Context, history []message, out chan<- string) err
 		} `json:"candidates"`
 	}
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -1120,6 +1121,7 @@ func streamOpenAICompat(ctx context.Context, url, apiKey, model string, history 
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
