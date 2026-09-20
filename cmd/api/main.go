@@ -1254,26 +1254,79 @@ func sendChatRequest(ctx context.Context, url, apiKey string, reqBody chatReques
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+	const maxRetries = 3
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if err != nil {
+			return "", err
+		}
+
+		if resp.StatusCode == http.StatusOK {
+			var result chatResponse
+			if err := json.Unmarshal(body, &result); err != nil {
+				return "", err
+			}
+
+			if len(result.Choices) == 0 {
+				return "", fmt.Errorf("%s returned no choices", providerName)
+			}
+
+			return result.Choices[0].Message.Content, nil
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if attempt == maxRetries {
+				return "", fmt.Errorf(
+					"%s API rate limited after %d retries: %s",
+					providerName,
+					maxRetries,
+					string(body),
+				)
+			}
+
+			wait := time.Duration(1<<attempt) * time.Second
+			log.Printf(
+				"%s rate limited (429), retrying in %v...",
+				providerName,
+				wait,
+			)
+			time.Sleep(wait)
+
+			// IMPORTANT: recreate the request because the request body
+			// has already been consumed.
+			req, err = http.NewRequestWithContext(
+				ctx,
+				"POST",
+				url,
+				bytes.NewBuffer(jsonBody),
+			)
+			if err != nil {
+				return "", err
+			}
+
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+
+			continue
+		}
+
+		return "", fmt.Errorf(
+			"%s API error (status %d): %s",
+			providerName,
+			resp.StatusCode,
+			string(body),
+		)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s API error (status %d): %s", providerName, resp.StatusCode, string(body))
-	}
-	var result chatResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", err
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("%s returned no choices", providerName)
-	}
-	return result.Choices[0].Message.Content, nil
+
+	return "", fmt.Errorf("%s request failed", providerName)
 }
 
 // ================= Router =================
