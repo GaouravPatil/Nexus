@@ -53,6 +53,6 @@ jobs:
             ls -la /home/ubuntu/Nexus
 
             echo "Running deployment..."
-            cd /home/ubuntu/Nexus
+            cd $HOME/Nexus
             chmod +x deploy-nexus.sh
             ./deploy-nexus.sh
