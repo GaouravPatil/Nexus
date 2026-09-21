@@ -889,7 +889,7 @@ func streamGroq(ctx context.Context, history []message, out chan<- string) error
 		return errors.New("GROQ_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, "groq/compound", history, out)
+	err := streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, "groq/compound", history, out, "groq")
 	pMetrics.record("groq", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
@@ -916,7 +916,7 @@ func streamMistral(ctx context.Context, history []message, out chan<- string) er
 		return errors.New("MISTRAL_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, "mistral-small-latest", history, out)
+	err := streamOpenAICompat(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, "mistral-small-latest", history, out, "mistral")
 	pMetrics.record("mistral", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
@@ -943,7 +943,7 @@ func streamOpenAI(ctx context.Context, history []message, out chan<- string) err
 		return errors.New("OPENAI_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://api.openai.com/v1/chat/completions", apiKey, "gpt-4o-mini", history, out)
+	err := streamOpenAICompat(ctx, "https://api.openai.com/v1/chat/completions", apiKey, "gpt-4o-mini", history, out, "chatgpt")
 	pMetrics.record("chatgpt", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
@@ -1036,7 +1036,7 @@ func streamDeepseek(ctx context.Context, history []message, out chan<- string) e
 		return errors.New("DEEPSEEK_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", apiKey, "deepseek-ai/deepseek-v4-flash-0731", history, out)
+	err := streamOpenAICompat(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", apiKey, "deepseek-ai/deepseek-v4-flash-0731", history, out, "deepseek")
 	pMetrics.record("deepseek", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
@@ -1070,7 +1070,7 @@ func streamGemini(ctx context.Context, history []message, out chan<- string) err
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		pMetrics.record("gemini", 0, true)
-		return fmt.Errorf("gemini stream error (%d): %s", resp.StatusCode, string(body))
+		return formatAPIError("gemini", resp.StatusCode, body)
 	}
 	// Gemini SSE chunk shape
 	type geminiStreamChunk struct {
@@ -1124,12 +1124,99 @@ func buildGeminiContents(history []message) []geminiContent {
 		}
 		contents = append(contents, geminiContent{Role: role, Parts: []geminiPart{{Text: m.Content}}})
 	}
+	if len(contents) == 0 {
+		for _, m := range history {
+			if m.Content != "" {
+				contents = append(contents, geminiContent{Role: "user", Parts: []geminiPart{{Text: m.Content}}})
+				break
+			}
+		}
+	}
 	return contents
+}
+
+// ================= Provider Error Formatting & Helpers =================
+
+func formatAPIError(provider string, statusCode int, body []byte) error {
+	var errObj struct {
+		Object  string      `json:"object"`
+		Message string      `json:"message"`
+		Type    string      `json:"type"`
+		Code    interface{} `json:"code"`
+		Error   *struct {
+			Message string      `json:"message"`
+			Type    string      `json:"type"`
+			Code    interface{} `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &errObj)
+
+	msg := ""
+	if errObj.Error != nil && errObj.Error.Message != "" {
+		msg = errObj.Error.Message
+	} else if errObj.Message != "" {
+		msg = errObj.Message
+	}
+
+	lowerMsg := strings.ToLower(msg)
+	if statusCode == http.StatusTooManyRequests || strings.Contains(lowerMsg, "rate limit") {
+		if msg != "" {
+			return fmt.Errorf("%s API rate limit exceeded (429): %s", provider, msg)
+		}
+		return fmt.Errorf("%s API rate limit exceeded (429)", provider)
+	}
+	if strings.Contains(lowerMsg, "quota") || strings.Contains(lowerMsg, "credit") {
+		if msg != "" {
+			return fmt.Errorf("%s quota or credits exhausted: %s", provider, msg)
+		}
+		return fmt.Errorf("%s quota or credits exhausted", provider)
+	}
+	if msg != "" {
+		return fmt.Errorf("%s error (%d): %s", provider, statusCode, msg)
+	}
+	return fmt.Errorf("%s API error (%d): %s", provider, statusCode, string(body))
+}
+
+func isRecoverableProviderError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "429") ||
+		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "quota") ||
+		strings.Contains(s, "credit") ||
+		strings.Contains(s, "status 5") ||
+		strings.Contains(s, "503") ||
+		strings.Contains(s, "502") ||
+		strings.Contains(s, "500") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "timeout") ||
+		strings.Contains(s, "context deadline exceeded") ||
+		strings.Contains(s, "no choices") ||
+		strings.Contains(s, "model_not_found")
+}
+
+func streamProvider(ctx context.Context, provider string, history []message, out chan<- string) error {
+	switch provider {
+	case "groq":
+		return streamGroq(ctx, history, out)
+	case "mistral":
+		return streamMistral(ctx, history, out)
+	case "chatgpt":
+		return streamOpenAI(ctx, history, out)
+	case "gemini":
+		return streamGemini(ctx, history, out)
+	case "deepseek":
+		return streamDeepseek(ctx, history, out)
+	default:
+		return fmt.Errorf("unknown provider %q", provider)
+	}
 }
 
 // ================= OpenAI-compatible SSE streaming helper =================
 
-func streamOpenAICompat(ctx context.Context, url, apiKey, model string, history []message, out chan<- string) error {
+func streamOpenAICompat(ctx context.Context, url, apiKey, model string, history []message, out chan<- string, providerName string) error {
 	reqBody := chatRequest{Model: model, Messages: history, Stream: true}
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
@@ -1151,7 +1238,7 @@ func streamOpenAICompat(ctx context.Context, url, apiKey, model string, history 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+		return formatAPIError(providerName, resp.StatusCode, body)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -1204,6 +1291,14 @@ func callEnsemble(history []message) (string, map[string]string, error) {
 	go func() {
 		defer wg.Done()
 		answer, err := callMistral(history)
+		if err != nil && isRecoverableProviderError(err) {
+			log.Printf("ensemble: mistral failed (%v), attempting fallback to gemini", err)
+			geminiAns, geminiErr := callGemini(history)
+			if geminiErr == nil {
+				results[1] = providerResult{Provider: "gemini", Answer: geminiAns, Err: nil}
+				return
+			}
+		}
 		results[1] = providerResult{Provider: "mistral", Answer: answer, Err: err}
 	}()
 	wg.Wait()
@@ -1284,12 +1379,7 @@ func sendChatRequest(ctx context.Context, url, apiKey string, reqBody chatReques
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			if attempt == maxRetries {
-				return "", fmt.Errorf(
-					"%s API rate limited after %d retries: %s",
-					providerName,
-					maxRetries,
-					string(body),
-				)
+				return "", formatAPIError(providerName, resp.StatusCode, body)
 			}
 
 			wait := time.Duration(1<<attempt) * time.Second
@@ -1318,12 +1408,7 @@ func sendChatRequest(ctx context.Context, url, apiKey string, reqBody chatReques
 			continue
 		}
 
-		return "", fmt.Errorf(
-			"%s API error (status %d): %s",
-			providerName,
-			resp.StatusCode,
-			string(body),
-		)
+		return "", formatAPIError(providerName, resp.StatusCode, body)
 	}
 
 	return "", fmt.Errorf("%s request failed", providerName)
@@ -1609,6 +1694,26 @@ This summary will be given to you (as %s) as context before the user's next mess
 		summary, err = callGroq(summaryHistory)
 	}
 	if err != nil {
+		log.Printf("handleSummarize: target provider %s failed (%v), falling back to alternative provider for handoff brief", req.ToProvider, err)
+		for _, fallbackProv := range []string{"groq", "gemini"} {
+			if fallbackProv == req.ToProvider {
+				continue
+			}
+			var fbErr error
+			switch fallbackProv {
+			case "groq":
+				summary, fbErr = callGroq(summaryHistory)
+			case "gemini":
+				summary, fbErr = callGemini(summaryHistory)
+			}
+			if fbErr == nil {
+				log.Printf("handleSummarize: successfully generated brief using fallback %s", fallbackProv)
+				err = nil
+				break
+			}
+		}
+	}
+	if err != nil {
 		log.Printf("handleSummarize error: %v", err)
 		http.Error(w, "failed to generate summary", http.StatusInternalServerError)
 		return
@@ -1679,6 +1784,22 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		answer, rawAnswers, err = callProvider(provider, history)
+		if err != nil && isRecoverableProviderError(err) {
+			log.Printf("handleQuery: %s failed (%v), trying fallback providers", provider, err)
+			for _, p := range rankedProviders() {
+				if p == provider {
+					continue
+				}
+				var fbErr error
+				answer, rawAnswers, fbErr = callProvider(p, history)
+				if fbErr == nil {
+					log.Printf("handleQuery: successfully failed over from %s to %s", provider, p)
+					provider = p
+					err = nil
+					break
+				}
+			}
+		}
 		if err != nil {
 			if strings.HasPrefix(err.Error(), "unknown provider") {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1751,25 +1872,26 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := getUserIDFromContext(r.Context())
-	history, ragInjected := injectMemoryRAGContext(r.Context(), userID, lastPrompt, req.History)
+	history, ragInjected := injectMemoryRAGContext(r.Context(), userID, lastPrompt, history)
 	if ragInjected {
 		fmt.Fprintf(w, "event: memory_rag\ndata: {\"status\":\"active\"}\n\n")
 		flusher.Flush()
 	}
-	providerJSON, _ := json.Marshal(provider)
-	fmt.Fprintf(w, "event: provider\ndata: %s\n\n", providerJSON)
-	flusher.Flush()
 
 	ctx := r.Context()
 
 	// ── Ensemble: non-streaming, emit whole answer as one token ──
-	if provider == "ensemble" {
+	if req.Provider == "ensemble" {
 		answer, rawAnswers, err := callEnsemble(history)
 		if err != nil {
 			fmt.Fprintf(w, "event: error\ndata: %s\n\n", jsonEscape(err.Error()))
 			flusher.Flush()
 			return
 		}
+		providerJSON, _ := json.Marshal("ensemble")
+		fmt.Fprintf(w, "event: provider\ndata: %s\n\n", providerJSON)
+		flusher.Flush()
+
 		// Emit the full answer as a single token chunk
 		tokenJSON, _ := json.Marshal(answer)
 		fmt.Fprintf(w, "data: %s\n\n", tokenJSON)
@@ -1781,63 +1903,123 @@ func handleStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 
 		userID := getUserIDFromContext(ctx)
-		saveQuery(userID, lastPrompt, provider, answer)
+		saveQuery(userID, lastPrompt, "ensemble", answer)
 		fmt.Fprintf(w, "event: done\ndata: {}\n\n")
 		flusher.Flush()
 		return
 	}
 
-	// ── Streaming providers ──
-	tokenCh := make(chan string, 64)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer close(tokenCh)
-		var err error
-		switch provider {
-		case "groq":
-			err = streamGroq(ctx, history, tokenCh)
-		case "mistral":
-			err = streamMistral(ctx, history, tokenCh)
-		case "chatgpt":
-			err = streamOpenAI(ctx, history, tokenCh)
-		case "gemini":
-			err = streamGemini(ctx, history, tokenCh)
-		case "deepseek":
-			err = streamDeepseek(ctx, history, tokenCh)
-		default:
-			err = fmt.Errorf("unknown provider %q", provider)
+	// ── Streaming providers with resilient failover ──
+	var candidates []string
+	if req.Provider == "" || req.Provider == "auto" {
+		candidates = rankedProviders()
+	} else {
+		// Try requested provider first, but fallback to healthy providers on 429/quota error
+		candidates = []string{req.Provider}
+		for _, p := range rankedProviders() {
+			if p != req.Provider {
+				candidates = append(candidates, p)
+			}
 		}
-		if err != nil {
-			errCh <- err
-		}
-	}()
+	}
 
+	var activeProvider string
 	var fullAnswer strings.Builder
+	var lastErr error
 
-	for {
+	for _, p := range candidates {
+		tokenCh := make(chan string, 64)
+		errCh := make(chan error, 1)
+
+		go func(prov string) {
+			defer close(tokenCh)
+			err := streamProvider(ctx, prov, history, tokenCh)
+			if err != nil {
+				errCh <- err
+			}
+		}(p)
+
+		var firstToken string
+		var providerStarted bool
+
 		select {
 		case <-ctx.Done():
 			return
 		case err := <-errCh:
+			lastErr = err
+			pMetrics.record(p, 0, true)
+			log.Printf("stream: provider %s failed before tokens: %v", p, err)
+			if isRecoverableProviderError(err) && len(candidates) > 1 {
+				continue
+			}
 			fmt.Fprintf(w, "event: error\ndata: %s\n\n", jsonEscape(err.Error()))
 			flusher.Flush()
 			return
 		case token, open := <-tokenCh:
 			if !open {
-				// Channel closed — streaming complete
-				userID := getUserIDFromContext(ctx)
-				saveQuery(userID, lastPrompt, provider, fullAnswer.String())
-				fmt.Fprintf(w, "event: done\ndata: {}\n\n")
-				flusher.Flush()
-				return
+				select {
+				case err := <-errCh:
+					lastErr = err
+					pMetrics.record(p, 0, true)
+					log.Printf("stream: provider %s failed with closed channel: %v", p, err)
+					if isRecoverableProviderError(err) && len(candidates) > 1 {
+						continue
+					}
+					fmt.Fprintf(w, "event: error\ndata: %s\n\n", jsonEscape(err.Error()))
+					flusher.Flush()
+					return
+				default:
+					log.Printf("stream: provider %s emitted 0 tokens", p)
+					continue
+				}
 			}
-			fullAnswer.WriteString(token)
-			tokenJSON, _ := json.Marshal(token)
+			firstToken = token
+			providerStarted = true
+		}
+
+		if providerStarted {
+			activeProvider = p
+			providerJSON, _ := json.Marshal(activeProvider)
+			fmt.Fprintf(w, "event: provider\ndata: %s\n\n", providerJSON)
+			flusher.Flush()
+
+			fullAnswer.WriteString(firstToken)
+			tokenJSON, _ := json.Marshal(firstToken)
 			fmt.Fprintf(w, "data: %s\n\n", tokenJSON)
 			flusher.Flush()
+
+			// Drain the remaining tokens from this provider
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case err := <-errCh:
+					log.Printf("stream: mid-stream error on %s: %v", activeProvider, err)
+					fmt.Fprintf(w, "event: error\ndata: %s\n\n", jsonEscape(err.Error()))
+					flusher.Flush()
+					return
+				case token, open := <-tokenCh:
+					if !open {
+						userID := getUserIDFromContext(ctx)
+						saveQuery(userID, lastPrompt, activeProvider, fullAnswer.String())
+						fmt.Fprintf(w, "event: done\ndata: {}\n\n")
+						flusher.Flush()
+						return
+					}
+					fullAnswer.WriteString(token)
+					tJSON, _ := json.Marshal(token)
+					fmt.Fprintf(w, "data: %s\n\n", tJSON)
+					flusher.Flush()
+				}
+			}
 		}
 	}
+
+	if lastErr == nil {
+		lastErr = errors.New("all AI providers are currently unavailable")
+	}
+	fmt.Fprintf(w, "event: error\ndata: %s\n\n", jsonEscape(lastErr.Error()))
+	flusher.Flush()
 }
 
 func jsonEscape(s string) string {

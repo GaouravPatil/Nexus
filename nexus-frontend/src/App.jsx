@@ -748,9 +748,25 @@ function App() {
     } catch (err) {
       if (err.name === 'AbortError') return
       const isNetworkErr = err instanceof TypeError && err.message === 'Failed to fetch'
-      const displayMsg = isNetworkErr
+      let displayMsg = isNetworkErr
         ? `⚠️ Cannot reach the Nexus backend (${API_URL}). Make sure the backend server is running.`
         : err.message
+
+      // Clean up raw JSON error payloads if present
+      if (displayMsg.includes('API error') || displayMsg.includes('Rate limit exceeded')) {
+        try {
+          const jsonMatch = displayMsg.match(/\{.*\}/)
+          if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0])
+            if (parsed.message) {
+              displayMsg = `${displayMsg.split('{')[0].trim()}: ${parsed.message}`
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       // Replace the streaming placeholder with an error message
       updateConv(targetId, (c) => ({
         ...c,
@@ -1107,6 +1123,55 @@ function App() {
                                 {m.streaming && <span className="stream-cursor" />}
                               </div>
                             </MarkdownBoundary>
+                          ) : m.role === 'error' ? (
+                            <div className="error-bubble-body">
+                              <p style={{ margin: 0, lineHeight: 1.5 }}>{m.text}</p>
+                              {(String(m.text).toLowerCase().includes('rate limit') ||
+                                String(m.text).includes('429') ||
+                                String(m.text).toLowerCase().includes('quota') ||
+                                String(m.text).toLowerCase().includes('unavailable')) && (
+                                <div style={{ marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleProviderChange('groq')}
+                                    style={{
+                                      background: 'rgba(245, 80, 54, 0.15)',
+                                      border: '1px solid rgba(245, 80, 54, 0.5)',
+                                      color: '#ff8a75',
+                                      padding: '5px 12px',
+                                      borderRadius: '6px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: 500,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}
+                                  >
+                                    ⚡ Switch to Groq (Fast & Active)
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleProviderChange('gemini')}
+                                    style={{
+                                      background: 'rgba(56, 189, 248, 0.15)',
+                                      border: '1px solid rgba(56, 189, 248, 0.5)',
+                                      color: '#7dd3fc',
+                                      padding: '5px 12px',
+                                      borderRadius: '6px',
+                                      cursor: 'pointer',
+                                      fontSize: '12px',
+                                      fontWeight: 500,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}
+                                  >
+                                    ✨ Switch to Gemini (Active)
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           ) : (
                             m.text
                           )}
