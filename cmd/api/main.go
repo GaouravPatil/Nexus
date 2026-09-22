@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -2094,6 +2095,75 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(records)
 }
 
+// ================= Response perf: gzip + cache headers =================
+
+// gzipResponseWriter compresses JSON API responses. SSE streams
+// (Content-Type: text/event-stream) bypass compression so token flushes
+// are never buffered — compressing them would add latency, not remove it.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	gz      *gzip.Writer
+	useGzip bool
+	sentHdr bool
+}
+
+func (w *gzipResponseWriter) WriteHeader(status int) {
+	if w.sentHdr {
+		return
+	}
+	w.sentHdr = true
+	if strings.Contains(w.Header().Get("Content-Type"), "text/event-stream") {
+		w.useGzip = false
+	}
+	if w.useGzip {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Del("Content-Length")
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !w.sentHdr {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.useGzip && w.gz != nil {
+		return w.gz.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// withPerfHeaders trims API transfer size (gzip JSON, BestSpeed for
+// latency) and sets cache policy: dynamic endpoints are no-store, while
+// /health tolerates a short public cache. Applied at the mux level so it
+// covers every route including future static-asset serving.
+func withPerfHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if r.Method == http.MethodGet {
+			switch r.URL.Path {
+			case "/health":
+				w.Header().Set("Cache-Control", "public, max-age=30")
+			default:
+				w.Header().Set("Cache-Control", "no-store")
+			}
+		}
+		// Never gzip the SSE stream endpoint itself.
+		if r.URL.Path == "/stream" || !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		defer gz.Close()
+		gw := &gzipResponseWriter{ResponseWriter: w, gz: gz, useGzip: true}
+		next.ServeHTTP(gw, r)
+	})
+}
+
 // ================= CORS Handling =================
 
 func enableCORS(next http.HandlerFunc) http.HandlerFunc {
@@ -2151,11 +2221,12 @@ func main() {
 	}))
 
 	server := &http.Server{
-		Addr:         ":" + port,
-		Handler:      mux,
-		ReadTimeout:  35 * time.Second,
-		WriteTimeout: 120 * time.Second, // longer for streaming
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + port,
+		Handler:           withPerfHeaders(mux),
+		ReadTimeout:       35 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      120 * time.Second, // longer for streaming
+		IdleTimeout:       60 * time.Second,
 	}
 	log.Printf("nexus orchestrator-api listening on :%s", port)
 	if err := server.ListenAndServe(); err != nil {

@@ -1,5 +1,4 @@
-import { useState, useRef, useEffect, Component } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { useState, useRef, useEffect, Component, lazy, Suspense } from 'react'
 import {
   SquarePen,
   MessageSquare,
@@ -32,12 +31,17 @@ import {
   Image,
   File
 } from 'lucide-react'
-import BlurText from './BlurText'
-import SideRays from './SideRays'
-import BorderGlow from './BorderGlow'
-import AuthModal from './AuthModal.jsx'
-import AuthPage from './AuthPage.jsx'
-import HistoryPanel from './HistoryPanel.jsx'
+// Perf: split the 727KB single bundle. OGL WebGL (SideRays `setSize`/`render`),
+// motion (BlurText), BorderGlow, markdown and the auth/history panels load
+// on demand AFTER first paint instead of blocking it. Each Suspense fallback
+// below reserves the same layout space (see App.css min-heights) so lazy
+// hydration never causes CLS.
+const ReactMarkdown = lazy(() => import('react-markdown'))
+const BlurText = lazy(() => import('./BlurText.jsx'))
+const SideRays = lazy(() => import('./SideRays.jsx'))
+const BorderGlow = lazy(() => import('./BorderGlow.jsx'))
+const AuthPage = lazy(() => import('./AuthPage.jsx'))
+const HistoryPanel = lazy(() => import('./HistoryPanel.jsx'))
 import { supabase, isSupabaseConfigured } from './supabaseClient.js'
 import './App.css'
 
@@ -235,6 +239,13 @@ function Composer({
 
   return (
     <div className={`composer-glow-wrap${isEmpty ? ' landing-composer-wrap' : ''}`}>
+      <Suspense
+        fallback={
+          <div className="composer" aria-hidden="true">
+            <div className="composer-inner-row" style={{ minHeight: 36 }} />
+          </div>
+        }
+      >
       <BorderGlow
         borderRadius={22}
         backgroundColor={theme === 'light' ? '#FFFFFF' : '#131318'}
@@ -322,6 +333,7 @@ function Composer({
           </div>
         </form>
       </BorderGlow>
+      </Suspense>
     </div>
   )
 }
@@ -804,6 +816,15 @@ function App() {
 
   if (authReady && (!session || recoveryMode) && !isGuest) {
     return (
+      <Suspense
+        fallback={
+          <div className="page" aria-hidden="true">
+            <div className="main-area">
+              <div className="topbar" style={{ minHeight: 60 }} />
+            </div>
+          </div>
+        }
+      >
       <AuthPage
         theme={theme}
         initialTab={recoveryMode ? 'update' : 'signin'}
@@ -820,11 +841,15 @@ function App() {
           localStorage.setItem('nexus-guest-mode', 'true')
         }}
       />
+      </Suspense>
     )
   }
 
   return (
     <div className="page">
+      {/* Perf: WebGL rays hydrate after first paint — reserved .page-rays
+          layer keeps layout stable (no CLS) while vendor-ogl loads. */}
+      <Suspense fallback={<div className="page-rays" aria-hidden="true" />}>
       <SideRays
         speed={2.2}
         rayColor1={theme === 'light' ? '#F0A78A' : '#D97757'}
@@ -839,6 +864,7 @@ function App() {
         opacity={theme === 'light' ? 0.35 : 0.9}
         className="page-rays"
       />
+      </Suspense>
 
       {/* ── Sidebar Backdrop (mobile) ── */}
       {sidebarOpen && (
@@ -1040,6 +1066,14 @@ function App() {
             /* ── Landing: dynamic greeting + composer + starter chips ── */
             <div className="landing">
               <div className="hero">
+                {/* Perf: static greeting paints instantly (no CLS — same
+                    .hero-line box); motion-enhanced BlurText swaps in once
+                    vendor-motion loads. */}
+                <Suspense
+                  fallback={
+                    <p className="hero-line hero-minimal">{getDynamicGreeting(user)}</p>
+                  }
+                >
                 <BlurText
                   key={user?.email ?? 'dev'}
                   text={getDynamicGreeting(user)}
@@ -1047,6 +1081,7 @@ function App() {
                   direction="top"
                   className="hero-line hero-minimal"
                 />
+                </Suspense>
                 <p className="hero-subtext">
                   What would you like to build or explore today?
                 </p>
@@ -1085,7 +1120,11 @@ function App() {
                               style={{ backgroundColor: PROVIDER_COLORS[m.fromProvider] ?? '#888' }}
                             />
                             <span className="handoff-label">
+                              {/* Perf: markdown chunk loads on demand; plain
+                                  text fallback keeps layout stable. */}
+                              <Suspense fallback={<span>{m.text}</span>}>
                               <ReactMarkdown>{m.text}</ReactMarkdown>
+                              </Suspense>
                             </span>
                             <span
                               className="handoff-dot"
@@ -1119,7 +1158,9 @@ function App() {
                           {m.role === 'assistant' ? (
                             <MarkdownBoundary>
                               <div className="md-content">
+                                <Suspense fallback={<p style={{ margin: 0 }}>{String(m.text ?? '')}</p>}>
                                 <ReactMarkdown>{String(m.text ?? '')}</ReactMarkdown>
+                                </Suspense>
                                 {m.streaming && <span className="stream-cursor" />}
                               </div>
                             </MarkdownBoundary>
@@ -1221,8 +1262,12 @@ function App() {
         </div>
       </div>
 
-      {/* ── History Panel ── */}
-      {historyOpen && <HistoryPanel onClose={() => setHistoryOpen(false)} session={session} />}
+      {/* ── History Panel (lazy: panel-history + markdown chunks load on open) ── */}
+      {historyOpen && (
+        <Suspense fallback={null}>
+          <HistoryPanel onClose={() => setHistoryOpen(false)} session={session} />
+        </Suspense>
+      )}
     </div>
   )
 }

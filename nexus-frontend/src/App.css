@@ -1,4 +1,6 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* NOTE: Google Fonts are loaded non-render-blocking from index.html
+   (preload + media="print" swap). Do NOT add @import here — it chains a
+   render-blocking request behind the CSS bundle and duplicates the download. */
 
 /* ── Ultra-Minimal & Aesthetic Design System (Claude / Vercel style) ── */
 :root {
@@ -167,6 +169,9 @@ textarea::-webkit-scrollbar-thumb:hover {
   z-index: 0;
   pointer-events: none;
   background: radial-gradient(circle at 50% 10%, var(--accent-glow) 0%, transparent 60%);
+  /* Perf: WebGL canvas mounts async — reserve the layer so it never shifts layout */
+  contain: strict;
+  content-visibility: auto;
 }
 
 /* ════════════════════════════════════════
@@ -634,12 +639,17 @@ textarea::-webkit-scrollbar-thumb:hover {
   gap: 2.2rem;
   padding: 0 1.5rem 2rem;
   min-height: 0;
+  /* Perf CLS: keep landing height stable while lazy chunks (SideRays,
+     BlurText, BorderGlow) hydrate after first paint */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 560px;
 }
 
 .hero {
   text-align: center;
   width: 100%;
   max-width: 580px;
+  min-height: 96px; /* reserve greeting block → no shift when BlurText animates in */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -654,6 +664,8 @@ textarea::-webkit-scrollbar-thumb:hover {
   color: var(--ink);
   justify-content: center;
   margin: 0;
+  min-height: 3.6rem; /* reserve 2-line greeting slot */
+  text-wrap: balance;
 }
 
 .hero-subtext {
@@ -673,6 +685,7 @@ textarea::-webkit-scrollbar-thumb:hover {
   gap: 0.65rem;
   max-width: 600px;
   width: 100%;
+  min-height: 40px; /* reserve chip row → no CLS when chips hydrate */
 }
 
 .starter-chip {
@@ -938,12 +951,14 @@ textarea::-webkit-scrollbar-thumb:hover {
   flex-shrink: 0;
   min-width: 0;
   width: calc(100% - 2rem);
+  min-height: 76px; /* reserve composer slot while BorderGlow chunk loads */
 }
 
 .landing-composer-wrap {
   margin: 0;
   width: 100%;
   max-width: 820px;
+  min-height: 76px;
 }
 
 .composer {

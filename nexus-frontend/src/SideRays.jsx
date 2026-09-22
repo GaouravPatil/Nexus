@@ -68,7 +68,31 @@ const SideRays = ({
             cleanupFunctionRef.current = null;
         }
 
+        // Perf: never start WebGL during the initial loading phase. Waiting
+        // for an idle window moves Renderer init + first setSize/render
+        // (the `Lv`/`setSize`/`render` long task in the trace) off FCP/LCP.
+        let idleHandle = null;
+        let cancelled = false;
+
+        const scheduleIdle = (fn) => {
+            if (typeof window.requestIdleCallback === 'function') {
+                idleHandle = window.requestIdleCallback(fn, { timeout: 1500 });
+            } else {
+                idleHandle = window.setTimeout(() => fn(), 250);
+            }
+        };
+
         const initializeWebGL = async () => {
+            if (cancelled || !containerRef.current) return;
+
+            // Perf: honour reduced-motion / data-saver — render one static
+            // frame instead of a perpetual rAF loop burning the main thread.
+            const reducedMotion = typeof window.matchMedia === 'function' &&
+                window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            // Perf: cap pixel ratio — DPR 2 quadruples fragment work vs DPR 1
+            // for a decorative background. Mobile always renders at DPR 1.
+            const capDpr = window.innerWidth < 768 ? 1 : 1.5;
+
             if (!containerRef.current) return;
 
             await new Promise(resolve => setTimeout(resolve, 10));
@@ -76,7 +100,7 @@ const SideRays = ({
             if (!containerRef.current) return;
 
             const renderer = new Renderer({
-                dpr: Math.min(window.devicePixelRatio, 2),
+                dpr: Math.min(window.devicePixelRatio || 1, capDpr),
                 alpha: true
             });
             rendererRef.current = renderer;
@@ -183,33 +207,62 @@ void main() {
 
             const updateSize = () => {
                 if (!containerRef.current || !renderer) return;
-                renderer.dpr = Math.min(window.devicePixelRatio, 2);
+                // Perf: skip zero-area resizes during page load — they make
+                // OGL allocate 0-size targets and re-run setSize on next frame.
                 const { clientWidth: w, clientHeight: h } = containerRef.current;
+                if (!w || !h) return;
+                renderer.dpr = Math.min(window.devicePixelRatio || 1, capDpr);
                 renderer.setSize(w, h);
                 uniforms.iResolution.value = [w * renderer.dpr, h * renderer.dpr];
             };
 
             const loop = t => {
                 if (!rendererRef.current || !uniformsRef.current || !meshRef.current) return;
+                // Perf: pause rendering while the tab is hidden.
+                if (document.hidden) {
+                    animationIdRef.current = requestAnimationFrame(loop);
+                    return;
+                }
                 uniforms.iTime.value = t * 0.001;
                 try {
                     renderer.render({ scene: mesh });
-                    animationIdRef.current = requestAnimationFrame(loop);
+                    if (!reducedMotion) {
+                        animationIdRef.current = requestAnimationFrame(loop);
+                    }
                 } catch (e) {
                     return;
                 }
             };
 
-            window.addEventListener('resize', updateSize);
+            // Perf: coalesce resize bursts into a single setSize per frame.
+            let resizeQueued = false;
+            const onResize = () => {
+                if (resizeQueued) return;
+                resizeQueued = true;
+                requestAnimationFrame(() => {
+                    resizeQueued = false;
+                    updateSize();
+                });
+            };
+
+            window.addEventListener('resize', onResize);
             updateSize();
-            animationIdRef.current = requestAnimationFrame(loop);
+            if (reducedMotion) {
+                // Single static frame, then release the loop entirely.
+                try {
+                    uniforms.iTime.value = 0;
+                    renderer.render({ scene: mesh });
+                } catch (e) { /* noop */ }
+            } else {
+                animationIdRef.current = requestAnimationFrame(loop);
+            }
 
             cleanupFunctionRef.current = () => {
                 if (animationIdRef.current) {
                     cancelAnimationFrame(animationIdRef.current);
                     animationIdRef.current = null;
                 }
-                window.removeEventListener('resize', updateSize);
+                window.removeEventListener('resize', onResize);
                 if (renderer) {
                     try {
                         const loseCtx = renderer.gl.getExtension('WEBGL_lose_context');
@@ -224,9 +277,19 @@ void main() {
             };
         };
 
-        initializeWebGL();
+        scheduleIdle(() => {
+            if (!cancelled) initializeWebGL();
+        });
 
         return () => {
+            cancelled = true;
+            if (idleHandle != null) {
+                if (typeof window.cancelIdleCallback === 'function') {
+                    window.cancelIdleCallback(idleHandle);
+                } else {
+                    window.clearTimeout(idleHandle);
+                }
+            }
             if (cleanupFunctionRef.current) {
                 cleanupFunctionRef.current();
                 cleanupFunctionRef.current = null;

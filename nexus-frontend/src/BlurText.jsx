@@ -69,11 +69,35 @@ const BlurText = ({
     const totalDuration = stepDuration * (stepCount - 1);
     const times = Array.from({ length: stepCount }, (_, i) => (stepCount === 1 ? 0 : i / (stepCount - 1)));
 
+    // Perf: keyframes are identical for every word/char — build once, not N
+    // times per render. (Previously rebuilt inside the map below, adding
+    // main-thread work to the loading phase.)
+    const animateKeyframes = useMemo(
+        () => buildKeyframes(fromSnapshot, toSnapshots),
+        [fromSnapshot, toSnapshots]
+    );
+
+    // Perf: honour reduced-motion — skip the blur-filter animation entirely
+    // (blur keyframes are the most expensive part of this effect).
+    const prefersReducedMotion = useMemo(
+        () =>
+            typeof window !== 'undefined' &&
+            typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+        []
+    );
+
+    if (prefersReducedMotion) {
+        return (
+            <p ref={ref} className={className} style={{ display: 'flex', flexWrap: 'wrap' }}>
+                {text}
+            </p>
+        );
+    }
+
     return (
         <p ref={ref} className={className} style={{ display: 'flex', flexWrap: 'wrap' }}>
             {elements.map((segment, index) => {
-                const animateKeyframes = buildKeyframes(fromSnapshot, toSnapshots);
-
                 const spanTransition = {
                     duration: totalDuration,
                     times,

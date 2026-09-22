@@ -5,10 +5,51 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Nexus — One prompt, cross-model persistent memory. Seamlessly switch between Groq, Mistral, ChatGPT, Gemini, and Ensemble AI models." />
+    <meta name="theme-color" content="#0D0E12" />
     <title>Nexus — Multi-Model AI Orchestrator</title>
+    <!-- Perf: early connection setup for font origin (no render-blocking cost) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- Perf: load Google Fonts CSS off the critical path.
+         `media="print"` keeps it non-render-blocking; onload swaps to `all`.
+         display=swap is in the URL so text never stays invisible (no FOIT → less CLS). -->
+    <link
+      rel="preload"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      as="style"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet"
+      />
+    </noscript>
+    <!-- Perf: inline critical above-the-fold CSS so first paint is stable
+         before the hashed Vite bundle CSS arrives. Reserves layout space
+         (hero / composer / chips) to keep CLS near zero. -->
+    <style>
+      html, body, #root { height: 100%; width: 100%; margin: 0; padding: 0; }
+      body { background: #0D0E12; color: #F3F4F6;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        overflow: hidden; -webkit-font-smoothing: antialiased; }
+      #root { display: flex; }
+      .page { display: flex; height: 100vh; width: 100%; overflow: hidden; background: #0D0E12; }
+      .main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+      .topbar { height: 60px; flex-shrink: 0; }
+      .shell { flex: 1; display: flex; flex-direction: column; width: min(920px, 98%); margin: 0 auto; min-height: 0; }
+      .landing { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2.2rem; padding: 0 1.5rem 2rem; }
+      .hero { width: 100%; max-width: 580px; min-height: 96px; display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
+      .hero-line { min-height: 3.6rem; }
+      .landing-composer-wrap, .composer-glow-wrap { width: 100%; max-width: 820px; min-height: 76px; }
+      .starter-chips { max-width: 600px; width: 100%; min-height: 40px; }
+      .page-rays { position: absolute; inset: 0; pointer-events: none; contain: strict; content-visibility: auto; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -5,4 +5,14 @@
     pointer-events: none;
     z-index: 3;
     overflow: hidden;
+    /* Perf: canvas is injected async after idle — never let it shift layout */
+    contain: strict;
+    content-visibility: auto;
+}
+
+.side-rays-container canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
 }
