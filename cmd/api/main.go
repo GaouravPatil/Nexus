@@ -737,7 +737,7 @@ func handleMemories(w http.ResponseWriter, r *http.Request) {
 
 // providerCostPer1K holds approximate cost per 1K output tokens in USD.
 var providerCostPer1K = map[string]float64{
-	"groq":     0.00059, // groq/compound
+	"groq":     0.00030, // openai/gpt-oss-20b
 	"mistral":  0.00200, // mistral-small-latest
 	"chatgpt":  0.00600, // gpt-4o-mini
 	"gemini":   0.00035, // gemini-2.5-flash
@@ -870,12 +870,29 @@ type streamChunk struct {
 
 // ================= Groq adapter =================
 
+// Model IDs are env-overridable so a provider-side deprecation/rotation
+// (e.g. groq/compound returning model_not_found) is an ops change, not a
+// code change. Verified working default: openai/gpt-oss-20b.
+func getGroqModel() string {
+	if m := strings.TrimSpace(os.Getenv("GROQ_MODEL")); m != "" {
+		return m
+	}
+	return "openai/gpt-oss-20b"
+}
+
+func getMistralModel() string {
+	if m := strings.TrimSpace(os.Getenv("MISTRAL_MODEL")); m != "" {
+		return m
+	}
+	return "mistral-small-latest"
+}
+
 func callGroq(history []message) (string, error) {
 	apiKey := os.Getenv("GROQ_API_KEY")
 	if apiKey == "" {
 		return "", errors.New("GROQ_API_KEY environment variable is not set")
 	}
-	reqBody := chatRequest{Model: "groq/compound", Messages: history}
+	reqBody := chatRequest{Model: getGroqModel(), Messages: history}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	t0 := time.Now()
@@ -890,7 +907,7 @@ func streamGroq(ctx context.Context, history []message, out chan<- string) error
 		return errors.New("GROQ_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, "groq/compound", history, out, "groq")
+	err := streamOpenAICompat(ctx, "https://api.groq.com/openai/v1/chat/completions", apiKey, getGroqModel(), history, out, "groq")
 	pMetrics.record("groq", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
@@ -902,7 +919,7 @@ func callMistral(history []message) (string, error) {
 	if apiKey == "" {
 		return "", errors.New("MISTRAL_API_KEY environment variable is not set")
 	}
-	reqBody := chatRequest{Model: "mistral-small-latest", Messages: history}
+	reqBody := chatRequest{Model: getMistralModel(), Messages: history}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	t0 := time.Now()
@@ -917,7 +934,7 @@ func streamMistral(ctx context.Context, history []message, out chan<- string) er
 		return errors.New("MISTRAL_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, "mistral-small-latest", history, out, "mistral")
+	err := streamOpenAICompat(ctx, "https://api.mistral.ai/v1/chat/completions", apiKey, getMistralModel(), history, out, "mistral")
 	pMetrics.record("mistral", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
