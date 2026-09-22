@@ -1034,12 +1034,22 @@ func callGemini(history []message) (string, error) {
 
 // ================= DeepSeek adapter =================
 
+// Env-overridable for the same reason as Groq above: NVIDIA retires model
+// versions (v4-flash-0731 went EOL 2026-09-21). Verified working default:
+// deepseek-ai/deepseek-v4.1-flash.
+func getDeepseekModel() string {
+	if m := strings.TrimSpace(os.Getenv("DEEPSEEK_MODEL")); m != "" {
+		return m
+	}
+	return "deepseek-ai/deepseek-v4.1-flash"
+}
+
 func callDeepseek(history []message) (string, error) {
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
 		return "", errors.New("DEEPSEEK_API_KEY environment variable is not set")
 	}
-	reqBody := chatRequest{Model: "deepseek-ai/deepseek-v4-flash-0731", Messages: history}
+	reqBody := chatRequest{Model: getDeepseekModel(), Messages: history}
 	ctx, cancel := context.WithTimeout(context.Background(), 110*time.Second)
 	defer cancel()
 	t0 := time.Now()
@@ -1054,7 +1064,7 @@ func streamDeepseek(ctx context.Context, history []message, out chan<- string) e
 		return errors.New("DEEPSEEK_API_KEY not set")
 	}
 	t0 := time.Now()
-	err := streamOpenAICompat(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", apiKey, "deepseek-ai/deepseek-v4-flash-0731", history, out, "deepseek")
+	err := streamOpenAICompat(ctx, "https://integrate.api.nvidia.com/v1/chat/completions", apiKey, getDeepseekModel(), history, out, "deepseek")
 	pMetrics.record("deepseek", float64(time.Since(t0).Milliseconds()), err != nil)
 	return err
 }
